@@ -44,6 +44,9 @@ class Repository(Protocol):
     def get_room(self, room_id: UUID, actor: Principal) -> Room: ...
     def create_room(self, payload: RoomCreate, actor: Principal) -> Room: ...
     def update_room(self, room_id: UUID, payload: RoomUpdate, actor: Principal) -> Room: ...
+    def set_active_ticket(
+        self, room_id: UUID, ticket_id: UUID | None, actor: Principal
+    ) -> Room: ...
     def join_room(
         self, room_id: UUID, payload: RoomJoin, actor: Principal
     ) -> RoomMember: ...
@@ -174,6 +177,18 @@ class InMemoryRepository:
         room.updated_at = datetime.now(UTC)
         return deepcopy(room)
 
+    def set_active_ticket(
+        self, room_id: UUID, ticket_id: UUID | None, actor: Principal
+    ) -> Room:
+        room = self._require_owner(room_id, actor)
+        if ticket_id is not None:
+            ticket = self.tickets.get(ticket_id)
+            if not ticket or ticket.room_id != room_id:
+                raise NotFoundError("Ticket not found in this room")
+        room.active_ticket_id = ticket_id
+        room.updated_at = datetime.now(UTC)
+        return deepcopy(room)
+
     def join_room(
         self, room_id: UUID, payload: RoomJoin, actor: Principal
     ) -> RoomMember:
@@ -283,6 +298,13 @@ class InMemoryRepository:
         ticket = self.tickets.get(ticket_id)
         if not ticket or ticket.room_id != room_id:
             raise NotFoundError("Ticket not found")
+        ordered_before = sorted(
+            [item for item in self.tickets.values() if item.room_id == room_id],
+            key=lambda item: item.position,
+        )
+        deleted_index = next(
+            index for index, item in enumerate(ordered_before) if item.id == ticket_id
+        )
         del self.tickets[ticket_id]
         remaining = sorted(
             [item for item in self.tickets.values() if item.room_id == room_id],
@@ -290,6 +312,11 @@ class InMemoryRepository:
         )
         for position, item in enumerate(remaining):
             item.position = position
+        if room.active_ticket_id == ticket_id:
+            replacement_index = min(deleted_index, len(remaining) - 1)
+            room.active_ticket_id = (
+                remaining[replacement_index].id if remaining else None
+            )
         self._refresh_room_stats(room)
 
     def reorder_tickets(
@@ -435,6 +462,32 @@ class SupabaseRepository:
         )
         if not self._first(result.data):
             raise ForbiddenError("Only the facilitator can change this room")
+        return self.get_room(room_id, actor)
+
+    def set_active_ticket(
+        self, room_id: UUID, ticket_id: UUID | None, actor: Principal
+    ) -> Room:
+        self._require_owner_room(room_id, actor)
+        if ticket_id is not None:
+            ticket_result = (
+                self.client.table("tickets")
+                .select("id")
+                .eq("room_id", str(room_id))
+                .eq("id", str(ticket_id))
+                .limit(1)
+                .execute()
+            )
+            if not self._first(ticket_result.data):
+                raise NotFoundError("Ticket not found in this room")
+        result = (
+            self.client.table("rooms")
+            .update({"active_ticket_id": str(ticket_id) if ticket_id else None})
+            .eq("id", str(room_id))
+            .eq("owner_id", str(actor.id))
+            .execute()
+        )
+        if not self._first(result.data):
+            raise ForbiddenError("Only the facilitator can change the active ticket")
         return self.get_room(room_id, actor)
 
     @staticmethod
@@ -617,7 +670,24 @@ class SupabaseRepository:
         return Ticket.model_validate(row)
 
     def delete_ticket(self, room_id: UUID, ticket_id: UUID, actor: Principal) -> None:
-        self._require_owner_room(room_id, actor)
+        room = self._require_owner_room(room_id, actor)
+        ordered_before = (
+            self.client.table("tickets")
+            .select("id,position")
+            .eq("room_id", str(room_id))
+            .order("position")
+            .execute()
+        )
+        deleted_index = next(
+            (
+                index
+                for index, row in enumerate(ordered_before.data)
+                if str(row["id"]) == str(ticket_id)
+            ),
+            None,
+        )
+        if deleted_index is None:
+            raise NotFoundError("Ticket not found")
         result = (
             self.client.table("tickets")
             .delete()
@@ -642,6 +712,16 @@ class SupabaseRepository:
                     "p_ticket_ids": [str(row["id"]) for row in remaining.data],
                 },
             ).execute()
+        if room.active_ticket_id == ticket_id:
+            replacement_index = min(deleted_index, len(remaining.data) - 1)
+            replacement_id = (
+                str(remaining.data[replacement_index]["id"])
+                if remaining.data
+                else None
+            )
+            self.client.table("rooms").update(
+                {"active_ticket_id": replacement_id}
+            ).eq("id", str(room_id)).execute()
 
     def reorder_tickets(
         self, room_id: UUID, ticket_ids: list[UUID], actor: Principal

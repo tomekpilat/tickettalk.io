@@ -114,7 +114,7 @@ function Workspace({ user }) {
       setTickets(nextTickets)
       setMembers(nextMembers)
       setTicketIndex(Math.max(0, nextTickets.findIndex((ticket) => ticket.id === nextRoom.active_ticket_id)))
-      setView(nextTickets.length ? 'backlog' : 'import')
+      setView(nextRoom.active_ticket_id ? 'session' : nextTickets.length ? 'backlog' : 'import')
       setApiOnline(true)
       if (options.push !== false) pushPath(roomPath(nextRoom.id))
     } catch (error) {
@@ -169,9 +169,26 @@ function Workspace({ user }) {
         setRoom(freshRoom)
         setTickets(freshTickets)
         setMembers(freshMembers)
+        if (freshRoom.active_ticket_id) {
+          const activeIndex = freshTickets.findIndex(
+            (ticket) => ticket.id === freshRoom.active_ticket_id
+          )
+          if (activeIndex >= 0) {
+            if (freshRoom.active_ticket_id !== room.active_ticket_id) {
+              setSelectedVote(null)
+              setRevealed(false)
+            }
+            setTicketIndex(activeIndex)
+            setView('session')
+          }
+        } else if (room.active_ticket_id) {
+          setSelectedVote(null)
+          setRevealed(false)
+          setView(freshTickets.length ? 'backlog' : 'import')
+        }
       } catch { /* the next user action will surface connectivity or authorization */ }
     })
-  }, [room?.id])
+  }, [room?.active_ticket_id, room?.id])
 
   useEffect(() => {
     if (!room?.id) return undefined
@@ -332,12 +349,27 @@ function Workspace({ user }) {
     if (!window.confirm(`Remove ${ticket.issue_key || ticket.summary} from this room?`)) return
     try {
       await api.deleteTicket(room.id, ticket.id)
+      const freshRoom = await api.room(room.id)
       const remaining = tickets.filter((item) => item.id !== ticket.id)
         .map((item, position) => ({ ...item, position }))
       setTickets(remaining)
-      setRoom((currentRoom) => ({ ...currentRoom, ticket_count: remaining.length }))
+      setRoom(freshRoom)
       setToast('Ticket removed')
-      if (!remaining.length) setView('import')
+      if (ticket.id === room.active_ticket_id) {
+        setSelectedVote(null)
+        setRevealed(false)
+        const replacementIndex = remaining.findIndex(
+          (item) => item.id === freshRoom.active_ticket_id
+        )
+        if (replacementIndex >= 0) {
+          setTicketIndex(replacementIndex)
+          setView('session')
+        } else {
+          setView(remaining.length ? 'backlog' : 'import')
+        }
+      } else if (!remaining.length) {
+        setView('import')
+      }
     } catch (error) {
       setToast(error.message)
     }
@@ -357,12 +389,19 @@ function Workspace({ user }) {
     }
   }
 
-  const openTicket = (index) => {
-    if (index < 0 || index >= tickets.length) return
-    setTicketIndex(index)
-    setSelectedVote(null)
-    setRevealed(false)
-    setView('session')
+  const openTicket = async (index) => {
+    if (!isFacilitator || index < 0 || index >= tickets.length) return
+    const target = tickets[index]
+    try {
+      const updatedRoom = await api.setActiveTicket(room.id, target.id)
+      setRoom(updatedRoom)
+      setTicketIndex(index)
+      setSelectedVote(null)
+      setRevealed(false)
+      setView('session')
+    } catch (error) {
+      setToast(error.message)
+    }
   }
 
   const saveEstimate = async (points) => {
@@ -387,11 +426,7 @@ function Workspace({ user }) {
     URL.revokeObjectURL(link.href)
   }
 
-  const nextTicket = () => {
-    setTicketIndex((index) => Math.min(index + 1, tickets.length - 1))
-    setSelectedVote(null)
-    setRevealed(false)
-  }
+  const nextTicket = () => openTicket(ticketIndex + 1)
 
   const shareRoom = async () => {
     const url = `${window.location.origin}${roomPath(room.id)}`
@@ -525,7 +560,7 @@ function Workspace({ user }) {
 
   if (view === 'summary') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
-      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView('session')}>Session</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (item.story_points || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.story_points != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>)}</div></main>
+      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView('session')}>Session</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (item.story_points || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.story_points != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>)}</div></main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
@@ -533,14 +568,14 @@ function Workspace({ user }) {
 
   return (
     <div className="session-shell">
-      <header className="session-top"><Back onClick={() => setView('backlog')}>Backlog</Back><div><strong>{room.name}</strong><span>{ticketIndex + 1} of {tickets.length}</span></div><div className="session-actions">{isFacilitator && <button onClick={shareRoom}>Share</button>}<button onClick={() => setShowDetail((value) => !value)}>{showDetail ? 'Hide' : 'Ticket'} detail</button><button onClick={() => setView('summary')}>Summary</button></div></header>
+      <header className="session-top">{isFacilitator ? <Back onClick={() => setView('backlog')}>Backlog</Back> : <span className="session-role">Live session</span>}<div><strong>{room.name}</strong><span>{ticketIndex + 1} of {tickets.length}</span></div><div className="session-actions">{isFacilitator && <button onClick={shareRoom}>Share</button>}<button onClick={() => setShowDetail((value) => !value)}>{showDetail ? 'Hide' : 'Ticket'} detail</button><button onClick={() => setView('summary')}>Summary</button></div></header>
       <main className="session-main">
         <ParticipantRoster members={members} currentUserId={user.id} compact />
         <section className="story-copy"><p className="eyebrow">{current?.issue_key} · {current?.issue_type}</p><h1>{current?.summary}</h1>{showDetail && <p className="description">{current?.description || 'No ticket description supplied.'}</p>}</section>
         <section className="vote-area"><p className="micro-label">Choose your estimate</p><div className="cards">{votingScale.map((value) => <button key={value} className={selectedVote === value ? 'selected' : ''} onClick={() => { setSelectedVote(value); setRevealed(false) }}>{value}</button>)}</div></section>
         {!revealed ? <section className="waiting"><div className="avatars">{team.map((person, index) => <span className={index === 0 && selectedVote ? 'voted' : index > 0 ? 'voted' : ''} key={person.initials}>{person.initials}</span>)}</div><p>{selectedVote ? '4 of 4 voted' : '3 of 4 voted · waiting for you'}</p><button className="reveal" disabled={!selectedVote} onClick={() => setRevealed(true)}>Reveal cards</button></section> : <Results selected={selectedVote} onEstimate={saveEstimate} onNext={nextTicket} onRevote={() => setRevealed(false)} />}
       </main>
-      <footer className="ticket-rail"><button onClick={() => openTicket(Math.max(0, ticketIndex - 1))}>←</button><div>{tickets.map((item, index) => <button key={item.id} className={index === ticketIndex ? 'active' : item.story_points != null ? 'done' : ''} onClick={() => openTicket(index)}>{String(index + 1).padStart(2, '0')}</button>)}</div><button onClick={nextTicket}>→</button></footer>
+      <footer className="ticket-rail"><button disabled={!isFacilitator || ticketIndex === 0} onClick={() => openTicket(ticketIndex - 1)} aria-label="Previous ticket">←</button><div>{tickets.map((item, index) => <button key={item.id} disabled={!isFacilitator} className={index === ticketIndex ? 'active' : item.story_points != null ? 'done' : ''} onClick={() => openTicket(index)} aria-label={`Open ticket ${index + 1}`}>{String(index + 1).padStart(2, '0')}</button>)}</div><button disabled={!isFacilitator || ticketIndex === tickets.length - 1} onClick={nextTicket} aria-label="Next ticket">→</button></footer>
       {toast && <Toast>{toast}</Toast>}
     </div>
   )
@@ -611,7 +646,7 @@ function SignIn() {
 }
 
 function BacklogTable({ tickets, isFacilitator, onOpen, onEdit, onDelete, onMove }) {
-  return <div className="ticket-table panel"><div className="ticket-row ticket-head"><span>Key</span><span>Summary</span><span>Type</span><span>Points</span></div>{tickets.map((item, index) => <div className="backlog-row" key={item.id}><button className="ticket-row ticket-open" onClick={() => onOpen(index)}><span>{item.issue_key || 'Manual'}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>{isFacilitator && <div className="ticket-actions"><button disabled={index === 0} onClick={() => onMove(index, -1)} aria-label={`Move ${item.summary} up`}>↑</button><button disabled={index === tickets.length - 1} onClick={() => onMove(index, 1)} aria-label={`Move ${item.summary} down`}>↓</button><button onClick={() => onEdit(item)} aria-label={`Edit ${item.summary}`}>Edit</button><button className="danger-text" onClick={() => onDelete(item)} aria-label={`Remove ${item.summary}`}>Remove</button></div>}</div>)}</div>
+  return <div className="ticket-table panel"><div className="ticket-row ticket-head"><span>Key</span><span>Summary</span><span>Type</span><span>Points</span></div>{tickets.map((item, index) => <div className="backlog-row" key={item.id}><button className="ticket-row ticket-open" disabled={!isFacilitator} onClick={() => onOpen(index)}><span>{item.issue_key || 'Manual'}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>{isFacilitator && <div className="ticket-actions"><button disabled={index === 0} onClick={() => onMove(index, -1)} aria-label={`Move ${item.summary} up`}>↑</button><button disabled={index === tickets.length - 1} onClick={() => onMove(index, 1)} aria-label={`Move ${item.summary} down`}>↓</button><button onClick={() => onEdit(item)} aria-label={`Edit ${item.summary}`}>Edit</button><button className="danger-text" onClick={() => onDelete(item)} aria-label={`Remove ${item.summary}`}>Remove</button></div>}</div>)}</div>
 }
 
 function TicketEditor({ draft, setDraft, editing, error, onClose, onSave }) {

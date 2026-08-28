@@ -43,6 +43,9 @@ export const api = {
   updateRoom: (roomId, room) => request(`/api/rooms/${roomId}`, {
     method: 'PATCH', body: JSON.stringify(room),
   }),
+  setActiveTicket: (roomId, ticketId) => request(`/api/rooms/${roomId}/active-ticket`, {
+    method: 'PATCH', body: JSON.stringify({ ticket_id: ticketId }),
+  }),
   tickets: (roomId) => request(`/api/rooms/${roomId}/tickets`),
   previewImport: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import/preview`, {
     method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),

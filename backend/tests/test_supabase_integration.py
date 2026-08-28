@@ -106,6 +106,44 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
             headers=member_headers,
         )
         assert joined.status_code == 200
+
+        first_ticket_id = refreshed[0]["id"]
+        manual_ticket_id = manual.json()["id"]
+        activated = client.patch(
+            f"/api/rooms/{room_id}/active-ticket",
+            json={"ticket_id": first_ticket_id},
+            headers=owner_headers,
+        )
+        assert activated.status_code == 200
+        assert activated.json()["active_ticket_id"] == first_ticket_id
+        member_room = client.get(
+            f"/api/rooms/{room_id}", headers=member_headers
+        )
+        assert member_room.status_code == 200
+        assert member_room.json()["active_ticket_id"] == first_ticket_id
+
+        denied_navigation = client.patch(
+            f"/api/rooms/{room_id}/active-ticket",
+            json={"ticket_id": manual_ticket_id},
+            headers=member_headers,
+        )
+        assert denied_navigation.status_code == 403
+
+        rapid_navigation = client.patch(
+            f"/api/rooms/{room_id}/active-ticket",
+            json={"ticket_id": manual_ticket_id},
+            headers=owner_headers,
+        )
+        assert rapid_navigation.status_code == 200
+        reordered = client.put(
+            f"/api/rooms/{room_id}/tickets/order",
+            json={"ticket_ids": [manual_ticket_id, first_ticket_id]},
+            headers=owner_headers,
+        )
+        assert reordered.status_code == 200
+        reconnected = client.get(f"/api/rooms/{room_id}", headers=member_headers)
+        assert reconnected.json()["active_ticket_id"] == manual_ticket_id
+
         denied = client.post(
             f"/api/rooms/{room_id}/tickets",
             json={"summary": "Member mutation"},

@@ -280,3 +280,61 @@ def test_members_cannot_preview_or_mutate_the_backlog() -> None:
         ).status_code == 403
     finally:
         clear_overrides()
+
+
+def test_active_ticket_navigation_is_shared_owner_only_and_stable() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room_id = client.post("/api/rooms", json={"name": "Synchronized session"}).json()[
+        "id"
+    ]
+    tickets = [
+        client.post(
+            f"/api/rooms/{room_id}/tickets", json={"summary": f"Ticket {index}"}
+        ).json()
+        for index in range(1, 4)
+    ]
+    try:
+        first = client.patch(
+            f"/api/rooms/{room_id}/active-ticket",
+            json={"ticket_id": tickets[0]["id"]},
+        )
+        assert first.status_code == 200
+        assert first.json()["active_ticket_id"] == tickets[0]["id"]
+
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        client.post(f"/api/rooms/{room_id}/join", json={"display_name": "Sam"})
+        assert client.get(f"/api/rooms/{room_id}").json()["active_ticket_id"] == tickets[0][
+            "id"
+        ]
+        assert client.patch(
+            f"/api/rooms/{room_id}/active-ticket",
+            json={"ticket_id": tickets[1]["id"]},
+        ).status_code == 403
+
+        app.dependency_overrides[get_current_principal] = lambda: OWNER
+        for ticket in tickets[1:]:
+            assert client.patch(
+                f"/api/rooms/{room_id}/active-ticket",
+                json={"ticket_id": ticket["id"]},
+            ).status_code == 200
+
+        reversed_ids = [ticket["id"] for ticket in reversed(tickets)]
+        client.put(
+            f"/api/rooms/{room_id}/tickets/order", json={"ticket_ids": reversed_ids}
+        )
+        assert client.get(f"/api/rooms/{room_id}").json()["active_ticket_id"] == tickets[2][
+            "id"
+        ]
+
+        client.delete(f"/api/rooms/{room_id}/tickets/{tickets[2]['id']}")
+        assert client.get(f"/api/rooms/{room_id}").json()["active_ticket_id"] == tickets[1][
+            "id"
+        ]
+
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        reconnect = client.get(f"/api/rooms/{room_id}")
+        assert reconnect.status_code == 200
+        assert reconnect.json()["active_ticket_id"] == tickets[1]["id"]
+    finally:
+        clear_overrides()

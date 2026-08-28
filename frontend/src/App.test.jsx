@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.jsx'
 
@@ -25,6 +25,7 @@ const apiMock = vi.hoisted(() => ({
   updateTicket: vi.fn(),
   deleteTicket: vi.fn(),
   reorderTickets: vi.fn(),
+  setActiveTicket: vi.fn(),
   estimate: vi.fn(),
 }))
 
@@ -32,6 +33,8 @@ const authMock = vi.hoisted(() => ({
   useAuth: vi.fn(),
   signInAsMember: vi.fn(),
 }))
+
+const realtimeMock = vi.hoisted(() => ({ callback: null }))
 
 vi.mock('./lib/api.js', () => ({ api: apiMock }))
 vi.mock('./lib/auth.js', () => ({
@@ -41,10 +44,15 @@ vi.mock('./lib/auth.js', () => ({
   signOut: vi.fn(),
 }))
 vi.mock('./lib/supabase.js', () => ({
-  subscribeToRoom: () => () => {},
+  subscribeToRoom: (_roomId, callback) => {
+    realtimeMock.callback = callback
+    return () => {}
+  },
 }))
 
 beforeEach(() => {
+  vi.clearAllMocks()
+  realtimeMock.callback = null
   authMock.useAuth.mockReturnValue({ user, loading: false })
   apiMock.members.mockResolvedValue([])
   apiMock.touchPresence.mockResolvedValue({})
@@ -282,5 +290,66 @@ describe('ticket backlog', () => {
     await waitFor(() => expect(apiMock.reorderTickets).toHaveBeenCalledWith(
       roomId, ['ticket-2', 'ticket-1'],
     ))
+  })
+})
+
+describe('active ticket synchronization', () => {
+  const ticketOne = { id: 'ticket-1', room_id: roomId, position: 0, issue_key: 'PAY-201', summary: 'Wallet alert', issue_type: 'Story', description: 'Notify customers.', story_points: null }
+  const ticketTwo = { id: 'ticket-2', room_id: roomId, position: 1, issue_key: 'PAY-205', summary: 'Webhook retry', issue_type: 'Bug', description: 'Retry safely.', story_points: null }
+  const room = {
+    id: roomId,
+    owner_id: user.id,
+    name: 'Live planning',
+    scale: 'fibonacci',
+    reveal_mode: 'manual',
+    active_ticket_id: null,
+    ticket_count: 2,
+    sized_count: 0,
+    total_points: 0,
+  }
+
+  it('persists the facilitator selection before opening the session', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets.mockResolvedValue([ticketOne, ticketTwo])
+    apiMock.setActiveTicket.mockResolvedValue({ ...room, active_ticket_id: ticketTwo.id })
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Backlog' })).toBeVisible()
+    fireEvent.click(screen.getByText('Webhook retry').closest('button'))
+
+    await waitFor(() => expect(apiMock.setActiveTicket).toHaveBeenCalledWith(roomId, ticketTwo.id))
+    expect(await screen.findByRole('heading', { name: 'Webhook retry' })).toBeVisible()
+    expect(screen.getByText('PAY-205 · Bug')).toBeVisible()
+  })
+
+  it('moves a member through Realtime and clears their transient vote', async () => {
+    const member = {
+      id: '00000000-0000-0000-0000-000000000099',
+      displayName: 'Maya Chen',
+      isAnonymous: true,
+    }
+    const firstActiveRoom = { ...room, active_ticket_id: ticketOne.id }
+    const secondActiveRoom = { ...room, active_ticket_id: ticketTwo.id }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    authMock.useAuth.mockReturnValue({ user: member, loading: false })
+    apiMock.room.mockResolvedValueOnce(firstActiveRoom)
+    apiMock.tickets.mockResolvedValue([ticketOne, ticketTwo])
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Wallet alert' })).toBeVisible()
+    const five = screen.getByRole('button', { name: '5' })
+    fireEvent.click(five)
+    expect(five).toHaveClass('selected')
+    expect(screen.getByRole('button', { name: 'Next ticket' })).toBeDisabled()
+
+    apiMock.room.mockResolvedValue(secondActiveRoom)
+    await act(async () => realtimeMock.callback())
+
+    expect(await screen.findByRole('heading', { name: 'Webhook retry' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '5' })).not.toHaveClass('selected')
+    expect(apiMock.setActiveTicket).not.toHaveBeenCalled()
   })
 })

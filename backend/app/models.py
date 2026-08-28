@@ -147,6 +147,10 @@ class RoomMember(BaseModel):
     has_voted: bool = False
 
 
+class ActiveTicketUpdate(BaseModel):
+    ticket_id: UUID | None
+
+
 DuplicateBehavior = Literal["error", "skip", "replace"]
 ImportAction = Literal["import", "skip", "replace"]
 

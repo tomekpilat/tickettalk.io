@@ -10,6 +10,7 @@ from .auth import Principal, PrincipalDep
 from .config import Settings, get_settings
 from .jira import parse_jira_import
 from .models import (
+    ActiveTicketUpdate,
     EstimateUpdate,
     JiraImportPreview,
     JiraImportRequest,
@@ -102,6 +103,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: PrincipalDep,
     ) -> Room:
         return repository.update_room(room_id, payload, actor)
+
+    @app.patch("/api/rooms/{room_id}/active-ticket", response_model=Room)
+    def set_active_ticket(
+        room_id: UUID,
+        payload: ActiveTicketUpdate,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> Room:
+        return repository.set_active_ticket(room_id, payload.ticket_id, actor)
 
     @app.post("/api/rooms/{room_id}/join", response_model=RoomMember)
     def join_room(
