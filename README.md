@@ -67,11 +67,11 @@ FastAPI validates the Supabase JWT and always scopes reads and writes to the aut
 ```bash
 cd backend
 uv run ruff check .
-uv run pytest
+uv run pytest --cov --cov-report=term-missing
 
 cd ../frontend
 npm run lint
-npm test -- --run
+npm run test:coverage
 npm run build
 ```
 

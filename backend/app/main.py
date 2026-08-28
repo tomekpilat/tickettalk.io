@@ -15,7 +15,6 @@ from .config import Settings, get_settings
 from .jira import parse_jira_import
 from .models import (
     ActiveTicketUpdate,
-    EstimateUpdate,
     FinalEstimateUpdate,
     JiraImportPreview,
     JiraImportRequest,
@@ -376,18 +375,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: PrincipalDep,
     ) -> list[Ticket]:
         return repository.reorder_tickets(room_id, payload.ticket_ids, actor)
-
-    @app.patch("/api/tickets/{ticket_id}/estimate", response_model=Ticket)
-    def update_estimate(
-        ticket_id: UUID,
-        payload: EstimateUpdate,
-        repository: RepositoryDep,
-        actor: PrincipalDep,
-    ) -> Ticket:
-        ticket = repository.update_estimate(ticket_id, payload.story_points, actor)
-        if not ticket:
-            raise HTTPException(status_code=404, detail="Ticket not found")
-        return ticket
 
     return app
 

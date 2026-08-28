@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from app.jira import parse_jira_import
+from app.jira import MAX_IMPORT_BYTES, MAX_IMPORT_TICKETS, parse_jira_import
 from app.models import Ticket
 
 ROOM_ID = UUID("10000000-0000-0000-0000-000000000051")
@@ -74,3 +74,30 @@ def test_existing_keys_require_an_explicit_duplicate_behavior() -> None:
     assert replaced.rows[0].existing_ticket_id == existing[0].id
     assert replaced.rows[0].story_points == 13
     assert replaced.saved_count == 1
+
+
+def test_rejects_oversized_files_extra_columns_and_invalid_rows() -> None:
+    oversized = parse_jira_import("x" * (MAX_IMPORT_BYTES + 1), "error", [])
+    extra_column = parse_jira_import(
+        "Issue key,Summary\nPAY-2,Ticket,unexpected\n", "error", []
+    )
+    empty_summary = parse_jira_import("Issue key,Summary\nPAY-3,   \n", "error", [])
+
+    assert oversized.errors[0].field == "file"
+    assert "larger than 1 MB" in oversized.errors[0].message
+    assert extra_column.source_count == 1
+    assert extra_column.errors[0].row_number == 2
+    assert "more values" in extra_column.errors[0].message
+    assert empty_summary.errors[0].field == "Summary"
+
+
+def test_ignores_blank_rows_and_caps_ticket_count() -> None:
+    rows = ["Issue key,Summary", "PAY-1,First", " , "]
+    rows.extend(f"PAY-{index + 2},Ticket {index + 2}" for index in range(MAX_IMPORT_TICKETS))
+
+    preview = parse_jira_import("\n".join(rows), "error", [])
+
+    assert preview.source_count == MAX_IMPORT_TICKETS + 1
+    assert preview.saved_count == MAX_IMPORT_TICKETS
+    assert preview.errors[-1].field == "file"
+    assert "more than 500" in preview.errors[-1].message

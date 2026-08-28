@@ -94,7 +94,4 @@ export const api = {
   reorderTickets: (roomId, ticketIds) => request(`/api/rooms/${roomId}/tickets/order`, {
     method: 'PUT', body: JSON.stringify({ ticket_ids: ticketIds }),
   }),
-  estimate: (ticketId, storyPoints) => request(`/api/tickets/${ticketId}/estimate`, {
-    method: 'PATCH', body: JSON.stringify({ story_points: storyPoints }),
-  }),
 }

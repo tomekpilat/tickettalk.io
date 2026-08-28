@@ -206,7 +206,10 @@ class FinalEstimateUpdate(BaseModel):
     @field_validator("value")
     @classmethod
     def normalize_value(cls, value: str) -> str:
-        return value.strip().upper()
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("Choose a final estimate")
+        return normalized
 
 
 DuplicateBehavior = Literal["error", "skip", "replace"]
@@ -244,7 +247,3 @@ class TicketImportResult(BaseModel):
     imported_count: int = 0
     replaced_count: int = 0
     skipped_count: int = 0
-
-
-class EstimateUpdate(BaseModel):
-    story_points: float | None = Field(default=None, ge=0, le=1000)

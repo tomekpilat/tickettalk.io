@@ -45,7 +45,7 @@ jobs:
         working-directory: frontend
       - run: npm run lint
         working-directory: frontend
-      - run: npm test -- --run
+      - run: npm run test:coverage
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
@@ -75,7 +75,7 @@ jobs:
           echo "SUPABASE_INTEGRATION_SECRET_KEY=$SERVICE_ROLE_KEY" >> "$GITHUB_ENV"
       - run: uv sync --frozen
         working-directory: backend
-      - run: uv run pytest tests/test_supabase_integration.py
+      - run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=85
         working-directory: backend
 
   containers:

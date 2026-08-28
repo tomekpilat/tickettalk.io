@@ -186,14 +186,16 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
             headers=member_headers,
         )
         assert denied_reveal.status_code == 403
-        revealed = client.post(
-            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/reveal",
-            headers=owner_headers,
-        )
-        duplicate_reveal = client.post(
-            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/reveal",
-            headers=owner_headers,
-        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            revealed, duplicate_reveal = list(
+                executor.map(
+                    lambda _index: client.post(
+                        f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/reveal",
+                        headers=owner_headers,
+                    ),
+                    range(2),
+                )
+            )
         assert revealed.status_code == duplicate_reveal.status_code == 200
         assert revealed.json()["state"] == "revealed"
         assert len(revealed.json()["votes"]) == 2

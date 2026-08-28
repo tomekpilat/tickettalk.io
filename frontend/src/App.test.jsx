@@ -33,12 +33,13 @@ const apiMock = vi.hoisted(() => ({
   setFinalEstimate: vi.fn(),
   downloadRoomExport: vi.fn(),
   deleteRoom: vi.fn(),
-  estimate: vi.fn(),
 }))
 
 const authMock = vi.hoisted(() => ({
   useAuth: vi.fn(),
+  sendMagicLink: vi.fn(),
   signInAsMember: vi.fn(),
+  signOut: vi.fn(),
 }))
 
 const realtimeMock = vi.hoisted(() => ({ callback: null }))
@@ -46,9 +47,9 @@ const realtimeMock = vi.hoisted(() => ({ callback: null }))
 vi.mock('./lib/api.js', () => ({ api: apiMock }))
 vi.mock('./lib/auth.js', () => ({
   useAuth: authMock.useAuth,
-  sendMagicLink: vi.fn(),
+  sendMagicLink: authMock.sendMagicLink,
   signInAsMember: authMock.signInAsMember,
-  signOut: vi.fn(),
+  signOut: authMock.signOut,
 }))
 vi.mock('./lib/supabase.js', () => ({
   subscribeToRoom: (_roomId, callback) => {
@@ -69,6 +70,50 @@ beforeEach(() => {
   apiMock.voteResults.mockResolvedValue({
     room_id: roomId, ticket_id: 'ticket-1', state: 'voting', round: 1, votes: [],
     average: null, minimum: null, maximum: null, consensus: null, final_estimate: null,
+  })
+})
+
+describe('session entry states', () => {
+  it('renders loading and configuration failures without calling the API', () => {
+    authMock.useAuth.mockReturnValueOnce({ user: null, loading: true })
+    const { unmount } = render(<App />)
+    expect(screen.getByRole('heading', { name: 'Checking your session…' })).toBeVisible()
+    unmount()
+
+    authMock.useAuth.mockReturnValueOnce({
+      user: null, loading: false, error: 'Missing production configuration',
+    })
+    render(<App />)
+    expect(screen.getByRole('heading', { name: 'The app needs attention.' })).toBeVisible()
+    expect(screen.getByText('Missing production configuration')).toBeVisible()
+    expect(apiMock.rooms).not.toHaveBeenCalled()
+  })
+
+  it('sends a facilitator sign-in link and surfaces provider errors', async () => {
+    window.history.replaceState({}, '', '/')
+    authMock.useAuth.mockReturnValue({ user: null, loading: false })
+    authMock.sendMagicLink.mockResolvedValueOnce(undefined)
+    render(<App />)
+
+    fireEvent.change(screen.getByLabelText('Work email'), {
+      target: { value: 'maya@example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Email me a sign-in link/ }))
+    expect(await screen.findByText('Check your email for the sign-in link.')).toBeVisible()
+    expect(authMock.sendMagicLink).toHaveBeenCalledWith('maya@example.com')
+
+    authMock.sendMagicLink.mockRejectedValueOnce(new Error('Email unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: /Email me a sign-in link/ }))
+    expect(await screen.findByText('Email unavailable')).toBeVisible()
+  })
+
+  it('rejects malformed room paths without leaking room data', () => {
+    window.history.replaceState({}, '', '/rooms/not-a-uuid')
+    authMock.useAuth.mockReturnValue({ user: null, loading: false })
+    render(<App />)
+
+    expect(screen.getByRole('heading', { name: 'Room link not recognized.' })).toBeVisible()
+    expect(apiMock.room).not.toHaveBeenCalled()
   })
 })
 
@@ -150,6 +195,37 @@ describe('canonical room settings', () => {
       reveal_mode: 'manual',
     }))
     expect(await screen.findByText('Sprint 44 / import')).toBeVisible()
+  })
+
+  it('copies the canonical room URL with the browser origin', async () => {
+    const room = {
+      id: roomId,
+      owner_id: user.id,
+      name: 'Shared sprint',
+      scale: 'fibonacci',
+      reveal_mode: 'manual',
+      active_ticket_id: null,
+      ticket_count: 0,
+      sized_count: 0,
+      total_points: 0,
+    }
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets.mockResolvedValue([])
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Bring in the tickets.' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy room link' }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/rooms/${roomId}`,
+    ))
+    expect(await screen.findByText('Room link copied')).toBeVisible()
   })
 })
 

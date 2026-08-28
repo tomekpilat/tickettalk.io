@@ -130,9 +130,6 @@ class Repository(Protocol):
     def import_tickets(
         self, room_id: UUID, rows: list[JiraImportRow], actor: Principal
     ) -> TicketImportResult: ...
-    def update_estimate(
-        self, ticket_id: UUID, points: float | None, actor: Principal
-    ) -> Ticket | None: ...
 
 
 class InMemoryRepository:
@@ -584,18 +581,6 @@ class InMemoryRepository:
             replaced_count=replaced_count,
             skipped_count=skipped_count,
         )
-
-    def update_estimate(
-        self, ticket_id: UUID, points: float | None, actor: Principal
-    ) -> Ticket | None:
-        ticket = self.tickets.get(ticket_id)
-        if not ticket:
-            return None
-        room = self._require_owner(ticket.room_id, actor)
-        ticket.story_points = points
-        self._refresh_room_stats(room)
-        return deepcopy(ticket)
-
 
 class SupabaseRepository:
     def __init__(self, url: str, key: str) -> None:
@@ -1165,28 +1150,3 @@ class SupabaseRepository:
             replaced_count=replaced_count,
             skipped_count=skipped_count,
         )
-
-    def update_estimate(
-        self, ticket_id: UUID, points: float | None, actor: Principal
-    ) -> Ticket | None:
-        found = (
-            self.client.table("tickets")
-            .select("room_id")
-            .eq("id", str(ticket_id))
-            .limit(1)
-            .execute()
-        )
-        ticket_row = self._first(found.data)
-        if not ticket_row:
-            return None
-        room = self.get_room(UUID(str(ticket_row["room_id"])), actor)
-        if room.owner_id != actor.id:
-            raise ForbiddenError("Only the facilitator can set the final estimate")
-        result = (
-            self.client.table("tickets")
-            .update({"story_points": points})
-            .eq("id", str(ticket_id))
-            .execute()
-        )
-        row = self._first(result.data)
-        return Ticket.model_validate(row) if row else None

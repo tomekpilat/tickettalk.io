@@ -222,22 +222,6 @@ def test_room_validation_and_authentication() -> None:
         clear_overrides()
 
 
-def test_ticket_estimate_flow_requires_owner() -> None:
-    repository = InMemoryRepository()
-    client = client_with(repository)
-    try:
-        rooms = client.get("/api/rooms").json()
-        room_id = rooms[0]["id"]
-        tickets = client.get(f"/api/rooms/{room_id}/tickets").json()
-        response = client.patch(
-            f"/api/tickets/{tickets[2]['id']}/estimate", json={"story_points": 8}
-        )
-        assert response.status_code == 200
-        assert response.json()["story_points"] == 8
-    finally:
-        clear_overrides()
-
-
 def test_two_anonymous_clients_join_once_with_distinct_identities() -> None:
     repository = InMemoryRepository(seed=False)
     client = client_with(repository)
