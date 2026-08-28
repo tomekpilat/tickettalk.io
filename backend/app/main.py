@@ -8,7 +8,16 @@ from fastapi.responses import JSONResponse
 
 from .auth import Principal, PrincipalDep
 from .config import Settings, get_settings
-from .models import EstimateUpdate, Room, RoomCreate, RoomUpdate, Ticket, TicketImport
+from .models import (
+    EstimateUpdate,
+    Room,
+    RoomCreate,
+    RoomJoin,
+    RoomMember,
+    RoomUpdate,
+    Ticket,
+    TicketImport,
+)
 from .repositories import (
     ForbiddenError,
     InMemoryRepository,
@@ -82,6 +91,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: PrincipalDep,
     ) -> Room:
         return repository.update_room(room_id, payload, actor)
+
+    @app.post("/api/rooms/{room_id}/join", response_model=RoomMember)
+    def join_room(
+        room_id: UUID,
+        payload: RoomJoin,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> RoomMember:
+        return repository.join_room(room_id, payload, actor)
+
+    @app.get("/api/rooms/{room_id}/members", response_model=list[RoomMember])
+    def list_members(
+        room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
+    ) -> list[RoomMember]:
+        return repository.list_members(room_id, actor)
+
+    @app.post("/api/rooms/{room_id}/presence", response_model=RoomMember)
+    def touch_presence(
+        room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
+    ) -> RoomMember:
+        return repository.touch_presence(room_id, actor)
 
     @app.get("/api/rooms/{room_id}/tickets", response_model=list[Ticket])
     def list_tickets(

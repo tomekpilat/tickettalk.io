@@ -14,21 +14,36 @@ const apiMock = vi.hoisted(() => ({
   rooms: vi.fn(),
   room: vi.fn(),
   tickets: vi.fn(),
+  members: vi.fn(),
   createRoom: vi.fn(),
+  joinRoom: vi.fn(),
+  touchPresence: vi.fn(),
   updateRoom: vi.fn(),
   importTickets: vi.fn(),
   estimate: vi.fn(),
 }))
 
+const authMock = vi.hoisted(() => ({
+  useAuth: vi.fn(),
+  signInAsMember: vi.fn(),
+}))
+
 vi.mock('./lib/api.js', () => ({ api: apiMock }))
 vi.mock('./lib/auth.js', () => ({
-  useAuth: () => ({ user, loading: false }),
+  useAuth: authMock.useAuth,
   sendMagicLink: vi.fn(),
+  signInAsMember: authMock.signInAsMember,
   signOut: vi.fn(),
 }))
 vi.mock('./lib/supabase.js', () => ({
   subscribeToRoom: () => () => {},
 }))
+
+beforeEach(() => {
+  authMock.useAuth.mockReturnValue({ user, loading: false })
+  apiMock.members.mockResolvedValue([])
+  apiMock.touchPresence.mockResolvedValue({})
+})
 
 describe('room creation', () => {
   beforeEach(() => {
@@ -108,5 +123,68 @@ describe('canonical room settings', () => {
       reveal_mode: 'manual',
     }))
     expect(await screen.findByText('Sprint 44 / import')).toBeVisible()
+  })
+})
+
+describe('anonymous room join', () => {
+  it('creates an anonymous identity and joins with only a display name', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    authMock.useAuth.mockReturnValue({ user: null, loading: false })
+    authMock.signInAsMember.mockResolvedValue({ id: 'anonymous-user' })
+    apiMock.joinRoom.mockResolvedValue({
+      room_id: roomId,
+      user_id: 'anonymous-user',
+      role: 'member',
+      display_name: 'Maya Chen',
+      is_online: true,
+      has_voted: false,
+    })
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Join the conversation.' })).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '  Maya   Chen  ' } })
+    fireEvent.click(screen.getByRole('button', { name: /Join room/ }))
+
+    await waitFor(() => expect(authMock.signInAsMember).toHaveBeenCalledWith('Maya Chen'))
+    expect(apiMock.joinRoom).toHaveBeenCalledWith(roomId, 'Maya Chen')
+    expect(await screen.findByRole('heading', { name: 'You’re in.' })).toBeVisible()
+  })
+
+  it('reuses an existing anonymous session after refresh', async () => {
+    const anonymousUser = {
+      id: '00000000-0000-0000-0000-000000000099',
+      displayName: 'Maya Chen',
+      isAnonymous: true,
+    }
+    const room = {
+      id: roomId,
+      owner_id: user.id,
+      name: 'Shared planning',
+      scale: 'fibonacci',
+      reveal_mode: 'manual',
+      active_ticket_id: null,
+      ticket_count: 0,
+      sized_count: 0,
+      total_points: 0,
+    }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    authMock.useAuth.mockReturnValue({ user: anonymousUser, loading: false })
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets.mockResolvedValue([])
+    apiMock.members.mockResolvedValue([{
+      room_id: roomId,
+      user_id: anonymousUser.id,
+      role: 'member',
+      display_name: anonymousUser.displayName,
+      is_online: true,
+      has_voted: false,
+    }])
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'You’re in.' })).toBeVisible()
+    expect(screen.getByText('Maya Chen (you)')).toBeVisible()
+    expect(authMock.signInAsMember).not.toHaveBeenCalled()
+    expect(apiMock.joinRoom).not.toHaveBeenCalled()
   })
 })

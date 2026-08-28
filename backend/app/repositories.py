@@ -1,12 +1,14 @@
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
 from supabase import Client, create_client
 
 from .auth import DEVELOPMENT_USER_ID, Principal
-from .models import Room, RoomCreate, RoomUpdate, Ticket, TicketCreate
+from .models import Room, RoomCreate, RoomJoin, RoomMember, RoomUpdate, Ticket, TicketCreate
+
+PRESENCE_WINDOW = timedelta(seconds=45)
 
 
 class RepositoryError(Exception):
@@ -26,6 +28,11 @@ class Repository(Protocol):
     def get_room(self, room_id: UUID, actor: Principal) -> Room: ...
     def create_room(self, payload: RoomCreate, actor: Principal) -> Room: ...
     def update_room(self, room_id: UUID, payload: RoomUpdate, actor: Principal) -> Room: ...
+    def join_room(
+        self, room_id: UUID, payload: RoomJoin, actor: Principal
+    ) -> RoomMember: ...
+    def list_members(self, room_id: UUID, actor: Principal) -> list[RoomMember]: ...
+    def touch_presence(self, room_id: UUID, actor: Principal) -> RoomMember: ...
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]: ...
     def import_tickets(
         self, room_id: UUID, payload: list[TicketCreate], actor: Principal
@@ -39,7 +46,7 @@ class InMemoryRepository:
     def __init__(self, *, seed: bool = True) -> None:
         self.rooms: dict[UUID, Room] = {}
         self.tickets: dict[UUID, Ticket] = {}
-        self.members: dict[UUID, dict[UUID, str]] = {}
+        self.members: dict[UUID, dict[UUID, RoomMember]] = {}
         if not seed:
             return
         room_id = UUID("10000000-0000-4000-8000-000000000001")
@@ -52,7 +59,18 @@ class InMemoryRepository:
             total_points=8,
         )
         self.rooms[room.id] = room
-        self.members[room.id] = {DEVELOPMENT_USER_ID: "facilitator"}
+        now = datetime.now(UTC)
+        self.members[room.id] = {
+            DEVELOPMENT_USER_ID: RoomMember(
+                room_id=room.id,
+                user_id=DEVELOPMENT_USER_ID,
+                role="facilitator",
+                display_name="Tomasz Pilat",
+                joined_at=now,
+                last_seen_at=now,
+                is_online=True,
+            )
+        }
         seeds = [
             ("PAY-118", "Split payout ledger by currency", "Story", 5),
             ("PAY-124", "Add payment retry schedule", "Story", 3),
@@ -106,7 +124,18 @@ class InMemoryRepository:
     def create_room(self, payload: RoomCreate, actor: Principal) -> Room:
         room = Room(owner_id=actor.id, **payload.model_dump())
         self.rooms[room.id] = room
-        self.members[room.id] = {actor.id: "facilitator"}
+        now = datetime.now(UTC)
+        self.members[room.id] = {
+            actor.id: RoomMember(
+                room_id=room.id,
+                user_id=actor.id,
+                role="facilitator",
+                display_name=actor.display_name,
+                joined_at=now,
+                last_seen_at=now,
+                is_online=True,
+            )
+        }
         return deepcopy(room)
 
     def update_room(self, room_id: UUID, payload: RoomUpdate, actor: Principal) -> Room:
@@ -118,6 +147,53 @@ class InMemoryRepository:
             setattr(room, field, value)
         room.updated_at = datetime.now(UTC)
         return deepcopy(room)
+
+    def join_room(
+        self, room_id: UUID, payload: RoomJoin, actor: Principal
+    ) -> RoomMember:
+        room = self._room(room_id)
+        now = datetime.now(UTC)
+        existing = self.members.setdefault(room.id, {}).get(actor.id)
+        if existing:
+            existing.display_name = payload.display_name
+            existing.last_seen_at = now
+            existing.is_online = True
+            return deepcopy(existing)
+        member = RoomMember(
+            room_id=room.id,
+            user_id=actor.id,
+            role="facilitator" if room.owner_id == actor.id else "member",
+            display_name=payload.display_name,
+            joined_at=now,
+            last_seen_at=now,
+            is_online=True,
+        )
+        self.members[room.id][actor.id] = member
+        return deepcopy(member)
+
+    def list_members(self, room_id: UUID, actor: Principal) -> list[RoomMember]:
+        self._require_member(room_id, actor)
+        now = datetime.now(UTC)
+        return [
+            deepcopy(
+                member.model_copy(
+                    update={"is_online": now - member.last_seen_at <= PRESENCE_WINDOW}
+                )
+            )
+            for member in sorted(
+                self.members.get(room_id, {}).values(),
+                key=lambda item: (item.role != "facilitator", item.joined_at),
+            )
+        ]
+
+    def touch_presence(self, room_id: UUID, actor: Principal) -> RoomMember:
+        self._require_member(room_id, actor)
+        member = self.members.get(room_id, {}).get(actor.id)
+        if not member:
+            raise ForbiddenError("Join the room before updating presence")
+        member.last_seen_at = datetime.now(UTC)
+        member.is_online = True
+        return deepcopy(member)
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self._require_member(room_id, actor)
@@ -238,6 +314,112 @@ class SupabaseRepository:
         if not self._first(result.data):
             raise ForbiddenError("Only the facilitator can change this room")
         return self.get_room(room_id, actor)
+
+    @staticmethod
+    def _member_from_row(row: dict, voted_user_ids: set[str] | None = None) -> RoomMember:
+        member = RoomMember.model_validate(row)
+        now = datetime.now(UTC)
+        return member.model_copy(
+            update={
+                "is_online": now - member.last_seen_at <= PRESENCE_WINDOW,
+                "has_voted": str(member.user_id) in (voted_user_ids or set()),
+            }
+        )
+
+    def join_room(
+        self, room_id: UUID, payload: RoomJoin, actor: Principal
+    ) -> RoomMember:
+        room_result = (
+            self.client.table("rooms")
+            .select("id,owner_id")
+            .eq("id", str(room_id))
+            .limit(1)
+            .execute()
+        )
+        room = self._first(room_result.data)
+        if not room:
+            raise NotFoundError("Room unavailable")
+
+        now = datetime.now(UTC).isoformat()
+        self.client.table("profiles").upsert(
+            {"id": str(actor.id), "display_name": payload.display_name},
+            on_conflict="id",
+        ).execute()
+        existing_result = (
+            self.client.table("room_members")
+            .select("*")
+            .eq("room_id", str(room_id))
+            .eq("user_id", str(actor.id))
+            .limit(1)
+            .execute()
+        )
+        existing = self._first(existing_result.data)
+        if existing:
+            result = (
+                self.client.table("room_members")
+                .update({"display_name": payload.display_name, "last_seen_at": now})
+                .eq("room_id", str(room_id))
+                .eq("user_id", str(actor.id))
+                .execute()
+            )
+        else:
+            result = self.client.table("room_members").insert(
+                {
+                    "room_id": str(room_id),
+                    "user_id": str(actor.id),
+                    "role": (
+                        "facilitator"
+                        if str(room["owner_id"]) == str(actor.id)
+                        else "member"
+                    ),
+                    "display_name": payload.display_name,
+                    "last_seen_at": now,
+                }
+            ).execute()
+        row = self._first(result.data)
+        if not row:
+            raise RepositoryError("Room membership returned no data")
+        return self._member_from_row(row)
+
+    def list_members(self, room_id: UUID, actor: Principal) -> list[RoomMember]:
+        room = self.get_room(room_id, actor)
+        result = (
+            self.client.table("room_members")
+            .select("*")
+            .eq("room_id", str(room_id))
+            .order("joined_at")
+            .execute()
+        )
+        voted_user_ids: set[str] = set()
+        if room.active_ticket_id:
+            votes = (
+                self.client.table("votes")
+                .select("user_id")
+                .eq("room_id", str(room_id))
+                .eq("ticket_id", str(room.active_ticket_id))
+                .execute()
+            )
+            voted_user_ids = {str(row["user_id"]) for row in votes.data}
+        members = [
+            self._member_from_row(row, voted_user_ids) for row in result.data
+        ]
+        return sorted(
+            members, key=lambda item: (item.role != "facilitator", item.joined_at)
+        )
+
+    def touch_presence(self, room_id: UUID, actor: Principal) -> RoomMember:
+        self.get_room(room_id, actor)
+        result = (
+            self.client.table("room_members")
+            .update({"last_seen_at": datetime.now(UTC).isoformat()})
+            .eq("room_id", str(room_id))
+            .eq("user_id", str(actor.id))
+            .execute()
+        )
+        row = self._first(result.data)
+        if not row:
+            raise ForbiddenError("Join the room before updating presence")
+        return self._member_from_row(row)
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self.get_room(room_id, actor)

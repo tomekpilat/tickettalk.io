@@ -47,7 +47,10 @@ The initial migration creates profiles, rooms, memberships, tickets, and votes; 
 1. Sign in as a facilitator (or use the development identity).
 2. Create a room with a name, estimation scale, and reveal mode.
 3. Share the canonical `/rooms/<uuid>` URL.
-4. Open **Room settings** to rename the room. Scale and reveal mode can be changed until tickets are added.
+4. A teammate opens that URL, enters a display name, and receives a persistent anonymous membership for that browser.
+5. Open **Room settings** to rename the room. Scale and reveal mode can be changed until tickets are added.
+
+Room clients send a presence heartbeat every 15 seconds. Members are shown as disconnected after 45 seconds without a heartbeat, so abandoned browser sessions do not remain online indefinitely.
 
 FastAPI validates the Supabase JWT and always scopes reads and writes to the authenticated actor. Creating a room and its owner membership is atomic.
 
