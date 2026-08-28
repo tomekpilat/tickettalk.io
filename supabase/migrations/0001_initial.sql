@@ -312,6 +312,13 @@ grant select, insert, update, delete on public.tickets to authenticated;
 grant select, insert, update, delete on public.votes to authenticated;
 grant select on public.room_rollups to authenticated;
 
+grant select, insert, update, delete on public.profiles to service_role;
+grant select, insert, update, delete on public.rooms to service_role;
+grant select, insert, update, delete on public.room_members to service_role;
+grant select, insert, update, delete on public.tickets to service_role;
+grant select, insert, update, delete on public.votes to service_role;
+grant select on public.room_rollups to service_role;
+
 revoke all on function public.create_room_with_facilitator(uuid, text, text, text, text)
 from public, anon;
 grant execute on function public.create_room_with_facilitator(uuid, text, text, text, text)
