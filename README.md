@@ -56,6 +56,8 @@ Votes are submitted through FastAPI and the response never includes the selected
 
 Manual and automatic reveal share a durable ticket-round state. Automatic mode counts members seen within the 45-second presence window and reveals atomically when the last eligible vote arrives. Re-vote clears prior values, increments the round, and clears the prior final estimate; numeric summaries and final estimates are restored after reconnect.
 
+Facilitators can download an authorized server-side CSV containing Jira metadata, original story points, and final Tickettalks estimates. Room deletion requires typing the exact room name and cascades through memberships, tickets, safe vote statuses, and private votes; the API logs only room and owner identifiers for the deletion event.
+
 Jira imports accept CSV, TSV, pasted text, quoted commas, and multiline descriptions. Imports are limited to 1 MB and 500 tickets, validated by the API before saving, and require an explicit skip-or-replace choice for Jira keys already in the room. Facilitators can also add tickets without a Jira key and edit, reorder, or remove every backlog item; members retain read-only access.
 
 FastAPI validates the Supabase JWT and always scopes reads and writes to the authenticated actor. Creating a room and its owner membership is atomic.

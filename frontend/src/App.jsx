@@ -487,17 +487,27 @@ function Workspace({ user }) {
   }
 
   const exportCsv = () => {
-    const escape = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
-    const rows = [
-      ['Issue key', 'Summary', 'Issue Type', 'Story Points'],
-      ...tickets.map((item) => [item.issue_key, item.summary, item.issue_type, item.story_points]),
-    ]
-    const blob = new Blob([rows.map((row) => row.map(escape).join(',')).join('\n')], { type: 'text/csv' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = `${room.name.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')}-estimates.csv`
-    link.click()
-    URL.revokeObjectURL(link.href)
+    api.downloadRoomExport(room.id).then(({ blob, filename }) => {
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = filename
+      link.click()
+      URL.revokeObjectURL(link.href)
+    }).catch((error) => setToast(error.message))
+  }
+
+  const deleteRoom = async () => {
+    const confirmation = window.prompt(`Type the room name to delete it permanently:\n\n${room.name}`)
+    if (confirmation !== room.name) {
+      if (confirmation !== null) setFormError(`Type “${room.name}” exactly to confirm deletion.`)
+      return
+    }
+    try {
+      await api.deleteRoom(room.id)
+      goToRooms()
+    } catch (error) {
+      setFormError(error.message)
+    }
   }
 
   const nextTicket = (options = {}) => openTicket(ticketIndex + 1, options)
@@ -613,7 +623,7 @@ function Workspace({ user }) {
         </section>
         <div className="manual-entry"><span>Not in Jira?</span><button className="secondary" onClick={openNewTicket}>Add a ticket manually</button></div>
       </main>
-      {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
+      {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
       {ticketDraft && <TicketEditor draft={ticketDraft} setDraft={setTicketDraft} editing={Boolean(editingTicketId)} error={formError} onClose={() => setTicketDraft(null)} onSave={saveTicketDraft} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
@@ -627,7 +637,7 @@ function Workspace({ user }) {
         <ParticipantRoster members={members} currentUserId={user.id} compact />
         <BacklogTable tickets={tickets} isFacilitator={isFacilitator} onOpen={openTicket} onEdit={openTicketEditor} onDelete={deleteBacklogTicket} onMove={moveBacklogTicket} />
       </main>
-      {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
+      {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
       {ticketDraft && <TicketEditor draft={ticketDraft} setDraft={setTicketDraft} editing={Boolean(editingTicketId)} error={formError} onClose={() => setTicketDraft(null)} onSave={saveTicketDraft} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
@@ -636,7 +646,7 @@ function Workspace({ user }) {
   if (view === 'summary') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
       <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView('session')}>Session</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.final_estimate == null ? 'empty-points' : ''}>{item.final_estimate ?? '—'}</b></button>)}</div></main>
-      {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
+      {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
   )
@@ -732,9 +742,9 @@ function TicketEditor({ draft, setDraft, editing, error, onClose, onSave }) {
   return <div className="modal-backdrop" role="presentation"><form className="settings-panel ticket-editor panel" role="dialog" aria-modal="true" aria-labelledby="ticket-editor-title" onSubmit={submit}><div className="panel-label"><span id="ticket-editor-title">{editing ? 'Edit ticket' : 'Add ticket'}</span><button type="button" onClick={onClose} aria-label="Close ticket editor">×</button></div><label>Issue key <small>Optional</small><input value={draft.issue_key} maxLength={40} onChange={(event) => setDraft({ ...draft, issue_key: event.target.value })} placeholder="PAY-123" /></label><label>Summary<input required value={draft.summary} maxLength={500} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} /></label><label>Type<input required value={draft.issue_type} maxLength={80} onChange={(event) => setDraft({ ...draft, issue_type: event.target.value })} /></label><label>Description<textarea value={draft.description} maxLength={20000} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary">{editing ? 'Save changes' : 'Add to backlog'}</button></div></form></div>
 }
 
-function RoomSettings({ draft, setDraft, ticketCount, error, onClose, onSave }) {
+function RoomSettings({ draft, setDraft, ticketCount, error, onClose, onSave, onDelete }) {
   const locked = ticketCount > 0
-  return <div className="modal-backdrop" role="presentation"><section className="settings-panel panel" role="dialog" aria-modal="true" aria-labelledby="room-settings-title"><div className="panel-label"><span id="room-settings-title">Room settings</span><button onClick={onClose} aria-label="Close settings">×</button></div><label>Room name<input value={draft.name} maxLength={120} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Scale<select value={draft.scale} disabled={locked} onChange={(event) => setDraft({ ...draft, scale: event.target.value })}>{scaleChoices.map((choice) => <option value={choice.value} key={choice.value}>{choice.label}</option>)}</select></label><label>Reveal<select value={draft.reveal_mode} disabled={locked} onChange={(event) => setDraft({ ...draft, reveal_mode: event.target.value })}><option value="manual">Manual</option><option value="auto">When all voted</option></select></label>{locked && <p className="settings-note">Scale and reveal mode lock after tickets are added.</p>}{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" onClick={onSave}>Save settings</button></div></section></div>
+  return <div className="modal-backdrop" role="presentation"><section className="settings-panel panel" role="dialog" aria-modal="true" aria-labelledby="room-settings-title"><div className="panel-label"><span id="room-settings-title">Room settings</span><button onClick={onClose} aria-label="Close settings">×</button></div><label>Room name<input value={draft.name} maxLength={120} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Scale<select value={draft.scale} disabled={locked} onChange={(event) => setDraft({ ...draft, scale: event.target.value })}>{scaleChoices.map((choice) => <option value={choice.value} key={choice.value}>{choice.label}</option>)}</select></label><label>Reveal<select value={draft.reveal_mode} disabled={locked} onChange={(event) => setDraft({ ...draft, reveal_mode: event.target.value })}><option value="manual">Manual</option><option value="auto">When all voted</option></select></label>{locked && <p className="settings-note">Scale and reveal mode lock after tickets are added.</p>}{error && <p className="form-error">{error}</p>}<div className="danger-zone"><span><strong>Delete this room</strong><small>Members, tickets, votes, and estimates will be removed.</small></span><button className="danger-text" onClick={onDelete}>Delete room</button></div><div className="modal-actions"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" onClick={onSave}>Save settings</button></div></section></div>
 }
 
 function Results({ results, scale, isFacilitator, onEstimate, onNext, onRevote }) {

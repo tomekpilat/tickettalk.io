@@ -30,6 +30,20 @@ async function request(path, options) {
   return response.json()
 }
 
+async function download(path) {
+  const token = await getAccessToken()
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    throw new ApiError(payload.detail || `Request failed with ${response.status}`, response.status)
+  }
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'tickettalks-export.csv'
+  return { blob: await response.blob(), filename }
+}
+
 export const api = {
   me: () => request('/api/me'),
   rooms: () => request('/api/rooms'),
@@ -43,6 +57,8 @@ export const api = {
   updateRoom: (roomId, room) => request(`/api/rooms/${roomId}`, {
     method: 'PATCH', body: JSON.stringify(room),
   }),
+  downloadRoomExport: (roomId) => download(`/api/rooms/${roomId}/export`),
+  deleteRoom: (roomId) => request(`/api/rooms/${roomId}`, { method: 'DELETE' }),
   setActiveTicket: (roomId, ticketId) => request(`/api/rooms/${roomId}/active-ticket`, {
     method: 'PATCH', body: JSON.stringify({ ticket_id: ticketId }),
   }),

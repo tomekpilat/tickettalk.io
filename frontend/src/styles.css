@@ -147,6 +147,11 @@ button.ticket-row:hover { background:#faf6ed; }
 .ticket-editor textarea { width:100%; min-height:120px; resize:vertical; border:1px solid var(--line); background:var(--paper); padding:11px 12px; font:400 14px/1.5 'Instrument Sans'; }
 .ticket-editor label>small { margin-left:4px; color:#aaa18f; }
 .settings-note { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+.danger-zone { margin-top:8px; padding-top:16px; border-top:1px solid #e4c9c1; display:flex; align-items:center; justify-content:space-between; gap:18px; }
+.danger-zone span { display:flex; flex-direction:column; gap:3px; }
+.danger-zone strong { font-size:12px; }
+.danger-zone small { color:var(--muted); font-size:10px; }
+.danger-zone .danger-text { border:1px solid #c57b6d; padding:8px 11px; white-space:nowrap; }
 .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
 .toast { position:fixed; z-index:30; left:50%; bottom:26px; transform:translateX(-50%); background:var(--ink); color:var(--white); padding:11px 16px; font-size:12px; box-shadow:none; }
 .session-shell { min-height:100vh;display:flex;flex-direction:column; }

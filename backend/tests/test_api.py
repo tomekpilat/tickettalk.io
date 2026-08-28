@@ -1,3 +1,5 @@
+import csv
+import io
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -498,5 +500,73 @@ def test_auto_reveal_uses_current_online_members() -> None:
         assert client.get(
             f"/api/rooms/{room_id}/tickets/{ticket['id']}/votes"
         ).json()["state"] == "revealed"
+    finally:
+        clear_overrides()
+
+
+def test_export_is_server_authorized_and_delete_cascades(caplog) -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room = client.post("/api/rooms", json={"name": "Release, planning"}).json()
+    room_id = room["id"]
+    ticket = client.post(
+        f"/api/rooms/{room_id}/tickets",
+        json={
+            "issue_key": "PAY-900",
+            "summary": 'Quoted "summary"',
+            "issue_type": "Story",
+            "description": "First line\nSecond, line",
+            "story_points": 3,
+        },
+    ).json()
+    client.patch(
+        f"/api/rooms/{room_id}/active-ticket", json={"ticket_id": ticket["id"]}
+    )
+    client.put(
+        f"/api/rooms/{room_id}/tickets/{ticket['id']}/vote", json={"value": "8"}
+    )
+    client.post(f"/api/rooms/{room_id}/tickets/{ticket['id']}/reveal")
+    client.put(
+        f"/api/rooms/{room_id}/tickets/{ticket['id']}/final-estimate",
+        json={"value": "8"},
+    )
+    try:
+        exported = client.get(f"/api/rooms/{room_id}/export")
+        assert exported.status_code == 200
+        assert exported.headers["content-type"].startswith("text/csv")
+        assert "release-planning-" in exported.headers["content-disposition"]
+        rows = list(csv.reader(io.StringIO(exported.text)))
+        assert rows[0] == [
+            "Jira key",
+            "Summary",
+            "Issue type",
+            "Description",
+            "Original story points",
+            "Final Tickettalks estimate",
+        ]
+        assert rows[1] == [
+            "PAY-900",
+            'Quoted "summary"',
+            "Story",
+            "First line\nSecond, line",
+            "3.0",
+            "8",
+        ]
+
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        client.post(f"/api/rooms/{room_id}/join", json={"display_name": "Sam"})
+        assert client.get(f"/api/rooms/{room_id}/export").status_code == 403
+        assert client.delete(f"/api/rooms/{room_id}").status_code == 403
+
+        app.dependency_overrides[get_current_principal] = lambda: OWNER
+        with caplog.at_level("INFO", logger="tickettalks.rooms"):
+            deleted = client.delete(f"/api/rooms/{room_id}")
+        assert deleted.status_code == 204
+        assert client.get(f"/api/rooms/{room_id}").status_code == 404
+        assert not repository.members
+        assert not repository.tickets
+        assert not repository.votes
+        assert "room_deleted" in caplog.text
+        assert "value" not in caplog.text
     finally:
         clear_overrides()

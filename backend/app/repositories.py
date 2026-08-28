@@ -113,6 +113,8 @@ class Repository(Protocol):
     def set_final_estimate(
         self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
     ) -> Ticket: ...
+    def export_room(self, room_id: UUID, actor: Principal) -> tuple[Room, list[Ticket]]: ...
+    def delete_room(self, room_id: UUID, actor: Principal) -> None: ...
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]: ...
     def create_ticket(
         self, room_id: UUID, payload: TicketCreate, actor: Principal
@@ -419,6 +421,26 @@ class InMemoryRepository:
         ticket.final_estimate = value
         self._refresh_room_stats(room)
         return deepcopy(ticket)
+
+    def export_room(self, room_id: UUID, actor: Principal) -> tuple[Room, list[Ticket]]:
+        room = self._require_owner(room_id, actor)
+        return deepcopy(room), self.list_tickets(room_id, actor)
+
+    def delete_room(self, room_id: UUID, actor: Principal) -> None:
+        self._require_owner(room_id, actor)
+        ticket_ids = {
+            ticket.id for ticket in self.tickets.values() if ticket.room_id == room_id
+        }
+        self.votes = {
+            key: vote for key, vote in self.votes.items() if vote.ticket_id not in ticket_ids
+        }
+        self.tickets = {
+            ticket_id: ticket
+            for ticket_id, ticket in self.tickets.items()
+            if ticket.room_id != room_id
+        }
+        self.members.pop(room_id, None)
+        del self.rooms[room_id]
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self._require_member(room_id, actor)
@@ -925,6 +947,22 @@ class SupabaseRepository:
         if not row:
             raise NotFoundError("Ticket not found")
         return Ticket.model_validate(row)
+
+    def export_room(self, room_id: UUID, actor: Principal) -> tuple[Room, list[Ticket]]:
+        room = self._require_owner_room(room_id, actor)
+        return room, self.list_tickets(room_id, actor)
+
+    def delete_room(self, room_id: UUID, actor: Principal) -> None:
+        self._require_owner_room(room_id, actor)
+        result = (
+            self.client.table("rooms")
+            .delete()
+            .eq("id", str(room_id))
+            .eq("owner_id", str(actor.id))
+            .execute()
+        )
+        if not self._first(result.data):
+            raise NotFoundError("Room not found")
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self.get_room(room_id, actor)

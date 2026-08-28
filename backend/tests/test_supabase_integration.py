@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -213,6 +215,16 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
         )
         assert final_estimate.status_code == 200
         assert final_estimate.json()["final_estimate"] == "8"
+        exported = client.get(f"/api/rooms/{room_id}/export", headers=owner_headers)
+        assert exported.status_code == 200
+        export_rows = list(csv.reader(io.StringIO(exported.text)))
+        manual_export = next(
+            row for row in export_rows[1:] if row[1] == "Manual integration ticket"
+        )
+        assert manual_export[-1] == "8"
+        assert client.get(
+            f"/api/rooms/{room_id}/export", headers=member_headers
+        ).status_code == 403
 
         restarted = client.post(
             f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/revote",
@@ -273,6 +285,26 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
             headers=member_headers,
         )
         assert denied.status_code == 403
+
+        assert client.delete(
+            f"/api/rooms/{room_id}", headers=member_headers
+        ).status_code == 403
+        assert client.delete(
+            f"/api/rooms/{room_id}", headers=owner_headers
+        ).status_code == 204
+        assert client.get(
+            f"/api/rooms/{room_id}", headers=member_headers
+        ).status_code == 404
+        assert service.table("room_members").select("room_id").eq(
+            "room_id", room_id
+        ).execute().data == []
+        assert service.table("tickets").select("room_id").eq(
+            "room_id", room_id
+        ).execute().data == []
+        assert service.table("votes").select("room_id").eq(
+            "room_id", room_id
+        ).execute().data == []
+
     finally:
         app.dependency_overrides.clear()
         service.auth.admin.delete_user(str(owner.id))

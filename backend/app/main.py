@@ -1,10 +1,15 @@
+import csv
+import io
+import logging
+import re
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .auth import Principal, PrincipalDep
 from .config import Settings, get_settings
@@ -38,6 +43,8 @@ from .repositories import (
     SupabaseRepository,
 )
 
+logger = logging.getLogger("tickettalks.rooms")
+
 
 @lru_cache
 def get_repository() -> Repository:
@@ -61,6 +68,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
     )
 
     @app.exception_handler(NotFoundError)
@@ -116,6 +124,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: PrincipalDep,
     ) -> Room:
         return repository.set_active_ticket(room_id, payload.ticket_id, actor)
+
+    @app.get("/api/rooms/{room_id}/export")
+    def export_room(
+        room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
+    ) -> Response:
+        room, tickets = repository.export_room(room_id, actor)
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\r\n")
+        writer.writerow(
+            [
+                "Jira key",
+                "Summary",
+                "Issue type",
+                "Description",
+                "Original story points",
+                "Final Tickettalks estimate",
+            ]
+        )
+        for ticket in tickets:
+            writer.writerow(
+                [
+                    ticket.issue_key or "",
+                    ticket.summary,
+                    ticket.issue_type,
+                    ticket.description,
+                    "" if ticket.story_points is None else ticket.story_points,
+                    ticket.final_estimate or "",
+                ]
+            )
+        slug = re.sub(r"[^a-z0-9]+", "-", room.name.casefold()).strip("-") or "room"
+        filename = f"{slug}-{datetime.now(UTC).date().isoformat()}.csv"
+        return Response(
+            output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.delete("/api/rooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_room(
+        room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
+    ) -> None:
+        repository.delete_room(room_id, actor)
+        logger.info("room_deleted room_id=%s owner_id=%s", room_id, actor.id)
 
     @app.post("/api/rooms/{room_id}/join", response_model=RoomMember)
     def join_room(

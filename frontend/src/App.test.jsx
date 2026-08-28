@@ -31,6 +31,8 @@ const apiMock = vi.hoisted(() => ({
   revealVotes: vi.fn(),
   restartVote: vi.fn(),
   setFinalEstimate: vi.fn(),
+  downloadRoomExport: vi.fn(),
+  deleteRoom: vi.fn(),
   estimate: vi.fn(),
 }))
 
@@ -438,5 +440,52 @@ describe('vote reveal and final estimate', () => {
 
     expect(await screen.findByText('Unanimous')).toBeVisible()
     expect(apiMock.voteResults).toHaveBeenCalledWith(roomId, ticket.id)
+  })
+})
+
+describe('room export and deletion', () => {
+  const ticket = { id: 'ticket-1', room_id: roomId, position: 0, issue_key: 'PAY-201', summary: 'Wallet alert', issue_type: 'Story', description: 'Quoted, context', story_points: 3, final_estimate: '5', vote_state: 'revealed', vote_round: 1 }
+  const room = { id: roomId, owner_id: user.id, name: 'Release planning', scale: 'fibonacci', reveal_mode: 'manual', active_ticket_id: null, ticket_count: 1, sized_count: 1, total_points: 5 }
+
+  it('downloads the facilitator export from the authorized server response', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue({ ...room, active_ticket_id: ticket.id })
+    apiMock.tickets.mockResolvedValue([ticket])
+    apiMock.downloadRoomExport.mockResolvedValue({
+      blob: new Blob(['csv']), filename: 'release-planning-2026-08-28.csv',
+    })
+    URL.createObjectURL = vi.fn(() => 'blob:export')
+    URL.revokeObjectURL = vi.fn()
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Wallet alert' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Summary' }))
+    fireEvent.click(screen.getByRole('button', { name: /Export CSV/ }))
+    await waitFor(() => expect(apiMock.downloadRoomExport).toHaveBeenCalledWith(roomId))
+    anchorClick.mockRestore()
+  })
+
+  it('requires the exact room name before deleting and redirects home', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets.mockResolvedValue([ticket])
+    apiMock.rooms.mockResolvedValue([])
+    apiMock.deleteRoom.mockResolvedValue(null)
+    const prompt = vi.spyOn(window, 'prompt')
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(room.name)
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Backlog' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Room settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete room' }))
+    expect(apiMock.deleteRoom).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete room' }))
+
+    await waitFor(() => expect(apiMock.deleteRoom).toHaveBeenCalledWith(roomId))
+    expect(prompt.mock.calls[0][0]).toContain(room.name)
+    expect(window.location.pathname).toBe('/')
+    prompt.mockRestore()
   })
 })
