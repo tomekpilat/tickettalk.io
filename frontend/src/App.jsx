@@ -129,7 +129,7 @@ function Workspace({ user }) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [user.id])
 
   const goToRooms = useCallback(() => {
     pushPath('/')
@@ -197,7 +197,7 @@ function Workspace({ user }) {
         }
       } catch { /* the next user action will surface connectivity or authorization */ }
     })
-  }, [room?.active_ticket_id, room?.id])
+  }, [room?.active_ticket_id, room?.id, user.id])
 
   useEffect(() => {
     if (!room?.id) return undefined

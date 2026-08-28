@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
     demo_auth_token: str = "dev-facilitator"
+    rate_limit_join_per_minute: PositiveInt = 20
+    rate_limit_import_per_minute: PositiveInt = 12
+    rate_limit_vote_per_minute: PositiveInt = 120
 
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
 

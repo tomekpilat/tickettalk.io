@@ -1,6 +1,5 @@
 import csv
 import io
-import logging
 import re
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -34,6 +33,7 @@ from .models import (
     VoteResults,
     VoteSubmission,
 )
+from .observability import RequestContextMiddleware, event_logger, log_event
 from .repositories import (
     ConflictError,
     ForbiddenError,
@@ -42,8 +42,6 @@ from .repositories import (
     Repository,
     SupabaseRepository,
 )
-
-logger = logging.getLogger("tickettalks.rooms")
 
 
 @lru_cache
@@ -68,7 +66,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["Content-Disposition"],
+        expose_headers=[
+            "Content-Disposition",
+            "Retry-After",
+            "X-RateLimit-Limit",
+            "X-Request-ID",
+        ],
+    )
+    app.add_middleware(
+        RequestContextMiddleware,
+        join_limit=config.rate_limit_join_per_minute,
+        import_limit=config.rate_limit_import_per_minute,
+        vote_limit=config.rate_limit_vote_per_minute,
     )
 
     @app.exception_handler(NotFoundError)
@@ -86,6 +95,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health/ready")
+    def readiness(request: Request, repository: RepositoryDep) -> dict[str, str]:
+        try:
+            repository.healthcheck()
+        except Exception:  # noqa: BLE001 -- readiness is the dependency boundary
+            log_event(
+                event_logger,
+                "readiness_failed",
+                request_id=request.state.request_id,
+                dependency="supabase",
+            )
+            raise HTTPException(status_code=503, detail="A required service is unavailable")
+        return {"status": "ready"}
 
     @app.get("/api/me", response_model=Principal)
     def current_user(actor: PrincipalDep) -> Principal:
@@ -163,10 +186,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/rooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_room(
-        room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
+        room_id: UUID,
+        request: Request,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
     ) -> None:
         repository.delete_room(room_id, actor)
-        logger.info("room_deleted room_id=%s owner_id=%s", room_id, actor.id)
+        log_event(
+            event_logger,
+            "room_deleted",
+            request_id=request.state.request_id,
+            room_id=room_id,
+            owner_id=actor.id,
+        )
 
     @app.post("/api/rooms/{room_id}/join", response_model=RoomMember)
     def join_room(

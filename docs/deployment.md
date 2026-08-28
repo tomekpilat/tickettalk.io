@@ -37,6 +37,9 @@ APP_ENV=production
 FRONTEND_ORIGIN=https://tickettalk.io
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+RATE_LIMIT_JOIN_PER_MINUTE=20
+RATE_LIMIT_IMPORT_PER_MINUTE=12
+RATE_LIMIT_VOTE_PER_MINUTE=120
 ```
 
 Compose uses required-variable expressions, so a build with an incomplete environment stops before deployment. In Supabase Auth, enable anonymous sign-ins and add `https://tickettalk.io/**` to the redirect allow-list. Apply all migrations in `supabase/migrations` before inviting users.
@@ -44,7 +47,7 @@ Compose uses required-variable expressions, so a build with an incomplete enviro
 ## First deployment checks
 
 1. Deploy and wait for both Coolify health checks to become green.
-2. Confirm `https://tickettalk.io/healthz` returns `200` and `https://api.tickettalk.io/health` returns `{"status":"ok"}`.
+2. Confirm `https://tickettalk.io/healthz` returns `200`, `https://api.tickettalk.io/health` returns `{"status":"ok"}`, and `https://api.tickettalk.io/health/ready` returns `{"status":"ready"}`.
 3. Create a room, open its URL in a private browser, join, vote, reveal, and export.
 4. Inspect the built web assets and browser network log: `SUPABASE_SERVICE_ROLE_KEY` must not appear anywhere.
 5. Confirm cross-origin API calls originate only from `https://tickettalk.io` and produce no mixed-content errors.
@@ -69,3 +72,5 @@ Compose uses required-variable expressions, so a build with an incomplete enviro
 - Coolify configuration and server backups are monitored with the existing Hetzner/Coolify process used by the other hosted applications.
 - Exported room CSV files are user-managed artifacts, not database backups.
 - Record the date, operator, source backup, target project, and verification result for every restore drill.
+
+Monitoring, incident response, tested-restore expectations, log safety, rate limits, and retention are defined in [`operations.md`](operations.md). Use [`release-checklist.md`](release-checklist.md) for production sign-off.

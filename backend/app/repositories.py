@@ -86,6 +86,7 @@ class ConflictError(RepositoryError):
 
 
 class Repository(Protocol):
+    def healthcheck(self) -> None: ...
     def list_rooms(self, actor: Principal) -> list[Room]: ...
     def get_room(self, room_id: UUID, actor: Principal) -> Room: ...
     def create_room(self, payload: RoomCreate, actor: Principal) -> Room: ...
@@ -186,6 +187,9 @@ class InMemoryRepository:
                 ),
             )
             self.tickets[ticket.id] = ticket
+
+    def healthcheck(self) -> None:
+        return None
 
     def _room(self, room_id: UUID) -> Room:
         room = self.rooms.get(room_id)
@@ -596,6 +600,9 @@ class InMemoryRepository:
 class SupabaseRepository:
     def __init__(self, url: str, key: str) -> None:
         self.client: Client = create_client(url, key)
+
+    def healthcheck(self) -> None:
+        self.client.table("rooms").select("id", count="exact").limit(1).execute()
 
     @staticmethod
     def _first(data: list[dict] | dict | None) -> dict | None:

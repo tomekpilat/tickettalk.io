@@ -1,12 +1,14 @@
 import csv
 import io
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi.testclient import TestClient
 
 from app.auth import Principal, get_current_principal
-from app.main import app, get_repository
+from app.config import Settings
+from app.main import app, create_app, get_repository
 from app.repositories import InMemoryRepository
 
 OWNER = Principal(
@@ -39,6 +41,113 @@ def client_with(repository: InMemoryRepository, actor: Principal = OWNER) -> Tes
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+def test_health_readiness_and_request_ids(caplog) -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    try:
+        with caplog.at_level("INFO", logger="tickettalks.http"):
+            response = client.get(
+                "/health/ready",
+                headers={
+                    "X-Request-ID": "release-check-123",
+                    "Authorization": "Bearer never-log-this-token",
+                },
+            )
+        assert response.status_code == 200
+        assert response.json() == {"status": "ready"}
+        assert response.headers["X-Request-ID"] == "release-check-123"
+        message = next(
+            record.message for record in caplog.records if "http_request" in record.message
+        )
+        event = json.loads(message)
+        assert event["request_id"] == "release-check-123"
+        assert event["path"] == "/health/ready"
+        assert event["status"] == 200
+        assert "never-log-this-token" not in caplog.text
+    finally:
+        clear_overrides()
+
+
+def test_readiness_failure_is_generic() -> None:
+    class UnavailableRepository(InMemoryRepository):
+        def healthcheck(self) -> None:
+            raise RuntimeError("database connection included a secret")
+
+    repository = UnavailableRepository(seed=False)
+    client = client_with(repository)
+    try:
+        response = client.get("/health/ready")
+        assert response.status_code == 503
+        assert response.json() == {"detail": "A required service is unavailable"}
+        assert "secret" not in response.text
+    finally:
+        clear_overrides()
+
+
+def test_write_rate_limits_are_independent_and_return_retry_metadata() -> None:
+    repository = InMemoryRepository(seed=False)
+    limited_app = create_app(
+        Settings(
+            app_env="test",
+            rate_limit_join_per_minute=2,
+            rate_limit_import_per_minute=2,
+            rate_limit_vote_per_minute=2,
+        )
+    )
+    limited_app.dependency_overrides[get_repository] = lambda: repository
+    limited_app.dependency_overrides[get_current_principal] = lambda: OWNER
+    client = TestClient(limited_app)
+    headers = {"Authorization": "Bearer rate-limit-test"}
+    room_id = client.post(
+        "/api/rooms", json={"name": "Rate limited room"}, headers=headers
+    ).json()["id"]
+
+    assert client.post(
+        f"/api/rooms/{room_id}/join",
+        json={"display_name": "Owner"},
+        headers=headers,
+    ).status_code == 200
+    assert client.post(
+        f"/api/rooms/{room_id}/join",
+        json={"display_name": "Owner"},
+        headers=headers,
+    ).status_code == 200
+    blocked = client.post(
+        f"/api/rooms/{room_id}/join",
+        json={"display_name": "Owner"},
+        headers=headers,
+    )
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"]
+    assert blocked.headers["X-RateLimit-Limit"] == "2"
+    assert blocked.headers["X-Request-ID"]
+    assert blocked.json() == {"detail": "Too many requests. Try again shortly."}
+
+    import_payload = {
+        "content": "Issue key,Summary\nRATE-1,Rate limit import",
+        "duplicate_behavior": "error",
+    }
+    import_path = f"/api/rooms/{room_id}/tickets/import/preview"
+    assert client.post(import_path, json=import_payload, headers=headers).status_code == 200
+    assert client.post(import_path, json=import_payload, headers=headers).status_code == 200
+    assert client.post(import_path, json=import_payload, headers=headers).status_code == 429
+
+    ticket = client.post(
+        f"/api/rooms/{room_id}/tickets",
+        json={"summary": "Rate limited vote"},
+        headers=headers,
+    ).json()
+    client.patch(
+        f"/api/rooms/{room_id}/active-ticket",
+        json={"ticket_id": ticket["id"]},
+        headers=headers,
+    )
+    vote_path = f"/api/rooms/{room_id}/tickets/{ticket['id']}/vote"
+    assert client.put(vote_path, json={"value": "5"}, headers=headers).status_code == 200
+    assert client.put(vote_path, json={"value": "8"}, headers=headers).status_code == 200
+    assert client.put(vote_path, json={"value": "13"}, headers=headers).status_code == 429
 
 
 def test_room_creation_is_owned_and_uses_uuid() -> None:
@@ -559,7 +668,7 @@ def test_export_is_server_authorized_and_delete_cascades(caplog) -> None:
         assert client.delete(f"/api/rooms/{room_id}").status_code == 403
 
         app.dependency_overrides[get_current_principal] = lambda: OWNER
-        with caplog.at_level("INFO", logger="tickettalks.rooms"):
+        with caplog.at_level("INFO", logger="tickettalks.events"):
             deleted = client.delete(f"/api/rooms/{room_id}")
         assert deleted.status_code == 204
         assert client.get(f"/api/rooms/{room_id}").status_code == 404

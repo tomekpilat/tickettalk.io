@@ -3,7 +3,7 @@
 body { margin:0; min-width:320px; min-height:100vh; background:var(--paper); -webkit-font-smoothing:antialiased; }
 button,input,textarea { font:inherit; color:inherit; }
 button { cursor:pointer; }
-button:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px solid var(--green); outline-offset:2px; }
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible { outline:2px solid var(--green); outline-offset:2px; }
 button:disabled { opacity:.42; cursor:not-allowed; }
 .app-header { height:76px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; padding:0 max(32px,calc((100vw - 1160px)/2)); background:rgba(244,239,227,.92); }
 .logo-button { border:0; background:transparent; padding:0; }
@@ -208,3 +208,4 @@ button.ticket-row:hover { background:#faf6ed; }
 .ticket-rail>div .active { background:var(--ink);color:var(--white);border-color:var(--ink); }
 @media (max-width:800px) { .app-header nav>button:not(.avatar){display:none}.page{width:min(100% - 32px,1160px);padding-top:36px}.page-heading{align-items:flex-start;flex-direction:column}.rooms-grid,.import-grid,.split-heading{grid-template-columns:1fr;gap:28px}.new-room{order:2}.room-list{order:1}.ticket-row{grid-template-columns:82px 1fr 52px}.ticket-row>*:nth-child(3){display:none}.cards{overflow-x:auto;justify-content:flex-start;padding:10px 5px}.cards button{min-width:61px;height:88px}.session-top{grid-template-columns:auto 1fr auto;padding:0 12px}.session-top>div:nth-child(2){display:none}.session-actions button:first-child{display:none}.story-copy h1{font-size:34px}.summary-stats{gap:34px}.member-stack{display:none}.page-toolbar{align-items:flex-start}.room-actions{flex-wrap:wrap;justify-content:flex-end}}
 @media (max-width:520px) { .page-heading h1,.split-heading h1{font-size:40px}.ticket-row{grid-template-columns:72px 1fr 40px;padding:14px 12px;gap:9px}.summary-stats{justify-content:space-between;gap:10px}.summary-stats strong{font-size:29px}.result-cards{gap:6px}.result-cards strong{width:42px;height:54px}.consensus{gap:24px}.session-main{padding-inline:16px}.app-footer{padding-inline:18px} }
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important} }
