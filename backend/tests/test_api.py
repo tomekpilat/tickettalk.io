@@ -400,3 +400,103 @@ def test_votes_are_private_upserted_active_and_scale_bound() -> None:
         assert len([member for member in roster if member["has_voted"]]) == 2
     finally:
         clear_overrides()
+
+
+def test_manual_reveal_results_final_estimate_and_revote_are_durable() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room_id = client.post("/api/rooms", json={"name": "Reveal room"}).json()["id"]
+    ticket = client.post(
+        f"/api/rooms/{room_id}/tickets", json={"summary": "Estimate me"}
+    ).json()
+    client.patch(
+        f"/api/rooms/{room_id}/active-ticket", json={"ticket_id": ticket["id"]}
+    )
+    try:
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        client.post(f"/api/rooms/{room_id}/join", json={"display_name": "Sam"})
+        client.put(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/vote",
+            json={"value": "8"},
+        )
+        assert client.post(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/reveal"
+        ).status_code == 403
+
+        app.dependency_overrides[get_current_principal] = lambda: OWNER
+        client.put(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/vote",
+            json={"value": "5"},
+        )
+        revealed = client.post(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/reveal"
+        )
+        assert revealed.status_code == 200
+        assert revealed.json()["state"] == "revealed"
+        assert {vote["value"] for vote in revealed.json()["votes"]} == {"5", "8"}
+        assert revealed.json()["average"] == 6.5
+        assert revealed.json()["minimum"] == 5
+        assert revealed.json()["maximum"] == 8
+        assert revealed.json()["consensus"] == "close"
+
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        member_results = client.get(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/votes"
+        )
+        assert member_results.json()["votes"] == revealed.json()["votes"]
+        assert client.put(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/final-estimate",
+            json={"value": "8"},
+        ).status_code == 403
+
+        app.dependency_overrides[get_current_principal] = lambda: OWNER
+        estimate = client.put(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/final-estimate",
+            json={"value": "8"},
+        )
+        assert estimate.status_code == 200
+        assert estimate.json()["final_estimate"] == "8"
+        restarted = client.post(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/revote"
+        )
+        assert restarted.status_code == 200
+        assert restarted.json()["state"] == "voting"
+        assert restarted.json()["round"] == 2
+        assert restarted.json()["votes"] == []
+        assert restarted.json()["final_estimate"] is None
+    finally:
+        clear_overrides()
+
+
+def test_auto_reveal_uses_current_online_members() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room_id = client.post(
+        "/api/rooms", json={"name": "Auto reveal room", "reveal_mode": "auto"}
+    ).json()["id"]
+    ticket = client.post(
+        f"/api/rooms/{room_id}/tickets", json={"summary": "Estimate me"}
+    ).json()
+    client.patch(
+        f"/api/rooms/{room_id}/active-ticket", json={"ticket_id": ticket["id"]}
+    )
+    try:
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        client.post(f"/api/rooms/{room_id}/join", json={"display_name": "Sam"})
+        first = client.put(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/vote",
+            json={"value": "8"},
+        )
+        assert first.json()["revealed"] is False
+
+        app.dependency_overrides[get_current_principal] = lambda: OWNER
+        final = client.put(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/vote",
+            json={"value": "5"},
+        )
+        assert final.json()["revealed"] is True
+        assert client.get(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/votes"
+        ).json()["state"] == "revealed"
+    finally:
+        clear_overrides()

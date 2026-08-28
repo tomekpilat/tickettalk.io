@@ -12,6 +12,7 @@ from .jira import parse_jira_import
 from .models import (
     ActiveTicketUpdate,
     EstimateUpdate,
+    FinalEstimateUpdate,
     JiraImportPreview,
     JiraImportRequest,
     Room,
@@ -25,6 +26,7 @@ from .models import (
     TicketOrder,
     TicketUpdate,
     VoteReceipt,
+    VoteResults,
     VoteSubmission,
 )
 from .repositories import (
@@ -148,6 +150,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: PrincipalDep,
     ) -> VoteReceipt:
         return repository.submit_vote(room_id, ticket_id, payload.value, actor)
+
+    @app.get(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/votes",
+        response_model=VoteResults,
+    )
+    def get_vote_results(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteResults:
+        return repository.get_vote_results(room_id, ticket_id, actor)
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/reveal",
+        response_model=VoteResults,
+    )
+    def reveal_votes(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteResults:
+        return repository.reveal_votes(room_id, ticket_id, actor)
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/revote",
+        response_model=VoteResults,
+    )
+    def restart_vote(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteResults:
+        return repository.restart_vote(room_id, ticket_id, actor)
+
+    @app.put(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/final-estimate",
+        response_model=Ticket,
+    )
+    def set_final_estimate(
+        room_id: UUID,
+        ticket_id: UUID,
+        payload: FinalEstimateUpdate,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> Ticket:
+        return repository.set_final_estimate(room_id, ticket_id, payload.value, actor)
 
     @app.get("/api/rooms/{room_id}/tickets", response_model=list[Ticket])
     def list_tickets(

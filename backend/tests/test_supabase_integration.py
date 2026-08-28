@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -177,6 +178,94 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
             .execute()
         )
         assert len(safe_statuses.data) == 2
+
+        denied_reveal = client.post(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/reveal",
+            headers=member_headers,
+        )
+        assert denied_reveal.status_code == 403
+        revealed = client.post(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/reveal",
+            headers=owner_headers,
+        )
+        duplicate_reveal = client.post(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/reveal",
+            headers=owner_headers,
+        )
+        assert revealed.status_code == duplicate_reveal.status_code == 200
+        assert revealed.json()["state"] == "revealed"
+        assert len(revealed.json()["votes"]) == 2
+        assert duplicate_reveal.json()["votes"] == revealed.json()["votes"]
+        member_results = client.get(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/votes",
+            headers=member_headers,
+        )
+        assert member_results.json()["votes"] == revealed.json()["votes"]
+        assert client.put(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/final-estimate",
+            json={"value": "8"},
+            headers=member_headers,
+        ).status_code == 403
+        final_estimate = client.put(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/final-estimate",
+            json={"value": "8"},
+            headers=owner_headers,
+        )
+        assert final_estimate.status_code == 200
+        assert final_estimate.json()["final_estimate"] == "8"
+
+        restarted = client.post(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/revote",
+            headers=owner_headers,
+        )
+        assert restarted.status_code == 200
+        assert restarted.json()["round"] == 2
+        assert restarted.json()["votes"] == []
+
+        auto_room = client.post(
+            "/api/rooms",
+            json={"name": "Concurrent auto reveal", "reveal_mode": "auto"},
+            headers=owner_headers,
+        ).json()
+        auto_room_id = auto_room["id"]
+        auto_ticket = client.post(
+            f"/api/rooms/{auto_room_id}/tickets",
+            json={"summary": "Concurrent ticket"},
+            headers=owner_headers,
+        ).json()
+        auto_ticket_id = auto_ticket["id"]
+        client.patch(
+            f"/api/rooms/{auto_room_id}/active-ticket",
+            json={"ticket_id": auto_ticket_id},
+            headers=owner_headers,
+        )
+        client.post(
+            f"/api/rooms/{auto_room_id}/join",
+            json={"display_name": "Integration member"},
+            headers=member_headers,
+        )
+
+        def concurrent_vote(headers: dict[str, str], value: str):
+            return client.put(
+                f"/api/rooms/{auto_room_id}/tickets/{auto_ticket_id}/vote",
+                json={"value": value},
+                headers=headers,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(
+                executor.map(
+                    lambda pair: concurrent_vote(*pair),
+                    [(owner_headers, "5"), (member_headers, "8")],
+                )
+            )
+        assert [response.status_code for response in responses] == [200, 200]
+        concurrent_results = client.get(
+            f"/api/rooms/{auto_room_id}/tickets/{auto_ticket_id}/votes",
+            headers=owner_headers,
+        )
+        assert concurrent_results.json()["state"] == "revealed"
+        assert len(concurrent_results.json()["votes"]) == 2
 
         denied = client.post(
             f"/api/rooms/{room_id}/tickets",

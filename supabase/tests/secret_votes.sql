@@ -66,8 +66,8 @@ select throws_ok(
       '00000000-0000-0000-0000-000000000082',
       '5'
   )$$,
-  '42501',
-  'new row violates row-level security policy for table "votes"',
+  '55000',
+  'Voting is open only for the active unrevealed ticket',
   'a member cannot vote on an inactive ticket'
 );
 

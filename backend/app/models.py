@@ -34,6 +34,10 @@ class Ticket(TicketCreate):
     id: UUID = Field(default_factory=uuid4)
     room_id: UUID
     position: int = 0
+    final_estimate: str | None = None
+    vote_state: Literal["voting", "revealed"] = "voting"
+    vote_round: int = 1
+    revealed_at: datetime | None = None
 
 
 class TicketUpdate(BaseModel):
@@ -168,12 +172,41 @@ class VoteReceipt(BaseModel):
     ticket_id: UUID
     user_id: UUID
     has_voted: bool = True
+    revealed: bool = False
     submitted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Vote(VoteReceipt):
     value: str
     revealed: bool = False
+
+
+class RevealedVote(BaseModel):
+    user_id: UUID
+    display_name: str
+    value: str
+
+
+class VoteResults(BaseModel):
+    room_id: UUID
+    ticket_id: UUID
+    state: Literal["voting", "revealed"]
+    round: int = 1
+    votes: list[RevealedVote] = Field(default_factory=list)
+    average: float | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+    consensus: Literal["unanimous", "close", "split", "not_numeric"] | None = None
+    final_estimate: str | None = None
+
+
+class FinalEstimateUpdate(BaseModel):
+    value: str = Field(min_length=1, max_length=8)
+
+    @field_validator("value")
+    @classmethod
+    def normalize_value(cls, value: str) -> str:
+        return value.strip().upper()
 
 
 DuplicateBehavior = Literal["error", "skip", "replace"]

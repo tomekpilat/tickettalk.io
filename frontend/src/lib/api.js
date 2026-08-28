@@ -49,6 +49,16 @@ export const api = {
   submitVote: (roomId, ticketId, value) => request(`/api/rooms/${roomId}/tickets/${ticketId}/vote`, {
     method: 'PUT', body: JSON.stringify({ value }),
   }),
+  voteResults: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}/votes`),
+  revealVotes: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}/reveal`, {
+    method: 'POST',
+  }),
+  restartVote: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}/revote`, {
+    method: 'POST',
+  }),
+  setFinalEstimate: (roomId, ticketId, value) => request(`/api/rooms/${roomId}/tickets/${ticketId}/final-estimate`, {
+    method: 'PUT', body: JSON.stringify({ value }),
+  }),
   tickets: (roomId) => request(`/api/rooms/${roomId}/tickets`),
   previewImport: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import/preview`, {
     method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),

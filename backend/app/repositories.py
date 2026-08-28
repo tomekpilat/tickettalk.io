@@ -9,6 +9,7 @@ from supabase import Client, create_client
 from .auth import DEVELOPMENT_USER_ID, Principal
 from .models import (
     JiraImportRow,
+    RevealedVote,
     Room,
     RoomCreate,
     RoomJoin,
@@ -20,6 +21,7 @@ from .models import (
     TicketUpdate,
     Vote,
     VoteReceipt,
+    VoteResults,
 )
 
 PRESENCE_WINDOW = timedelta(seconds=45)
@@ -28,6 +30,43 @@ VOTE_VALUES = {
     "extended": {"1", "2", "3", "5", "8", "13", "21", "34", "55", "?"},
     "tshirt": {"XS", "S", "M", "L", "XL", "?"},
 }
+
+
+def summarize_votes(
+    room_id: UUID, ticket: Ticket, votes: list[RevealedVote]
+) -> VoteResults:
+    numeric_values: list[float] = []
+    for vote in votes:
+        try:
+            numeric_values.append(float(vote.value))
+        except ValueError:
+            numeric_values = []
+            break
+    average = sum(numeric_values) / len(numeric_values) if numeric_values else None
+    minimum = min(numeric_values) if numeric_values else None
+    maximum = max(numeric_values) if numeric_values else None
+    if not votes:
+        consensus = None
+    elif not numeric_values:
+        consensus = "unanimous" if len({vote.value for vote in votes}) == 1 else "not_numeric"
+    elif minimum == maximum:
+        consensus = "unanimous"
+    elif maximum - minimum <= 3:
+        consensus = "close"
+    else:
+        consensus = "split"
+    return VoteResults(
+        room_id=room_id,
+        ticket_id=ticket.id,
+        state=ticket.vote_state,
+        round=ticket.vote_round,
+        votes=votes if ticket.vote_state == "revealed" else [],
+        average=round(average, 1) if average is not None else None,
+        minimum=minimum,
+        maximum=maximum,
+        consensus=consensus,
+        final_estimate=ticket.final_estimate,
+    )
 
 
 class RepositoryError(Exception):
@@ -62,6 +101,18 @@ class Repository(Protocol):
     def submit_vote(
         self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
     ) -> VoteReceipt: ...
+    def get_vote_results(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults: ...
+    def reveal_votes(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults: ...
+    def restart_vote(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults: ...
+    def set_final_estimate(
+        self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
+    ) -> Ticket: ...
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]: ...
     def create_ticket(
         self, room_id: UUID, payload: TicketCreate, actor: Principal
@@ -127,6 +178,7 @@ class InMemoryRepository:
                 summary=summary,
                 issue_type=kind,
                 story_points=points,
+                final_estimate=str(points) if points is not None else None,
                 description=(
                     "Acceptance criteria and implementation notes are ready for team review."
                 ),
@@ -277,12 +329,96 @@ class InMemoryRepository:
             submitted_at=submitted_at,
         )
         self.votes[(ticket_id, actor.id)] = vote
+        online_members = [
+            member
+            for member in self.members.get(room_id, {}).values()
+            if submitted_at - member.last_seen_at <= PRESENCE_WINDOW
+        ]
+        if room.reveal_mode == "auto" and online_members and all(
+            (ticket_id, member.user_id) in self.votes for member in online_members
+        ):
+            for stored_vote in self.votes.values():
+                if stored_vote.ticket_id == ticket_id:
+                    stored_vote.revealed = True
+            ticket = self.tickets[ticket_id]
+            ticket.vote_state = "revealed"
+            ticket.revealed_at = submitted_at
         return VoteReceipt(
             room_id=room_id,
             ticket_id=ticket_id,
             user_id=actor.id,
             submitted_at=submitted_at,
+            revealed=self.tickets[ticket_id].vote_state == "revealed",
         )
+
+    def get_vote_results(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults:
+        self._require_member(room_id, actor)
+        ticket = self.tickets.get(ticket_id)
+        if not ticket or ticket.room_id != room_id:
+            raise NotFoundError("Ticket not found")
+        votes = []
+        if ticket.vote_state == "revealed":
+            for vote in self.votes.values():
+                if vote.ticket_id == ticket_id:
+                    member = self.members[room_id][vote.user_id]
+                    votes.append(
+                        RevealedVote(
+                            user_id=vote.user_id,
+                            display_name=member.display_name,
+                            value=vote.value,
+                        )
+                    )
+        return summarize_votes(room_id, ticket, votes)
+
+    def reveal_votes(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults:
+        room = self._require_owner(room_id, actor)
+        if room.active_ticket_id != ticket_id:
+            raise ConflictError("Only the active ticket can be revealed")
+        matching = [vote for vote in self.votes.values() if vote.ticket_id == ticket_id]
+        if not matching:
+            raise ConflictError("At least one vote is required")
+        ticket = self.tickets[ticket_id]
+        if ticket.vote_state != "revealed":
+            for vote in matching:
+                vote.revealed = True
+            ticket.vote_state = "revealed"
+            ticket.revealed_at = datetime.now(UTC)
+        return self.get_vote_results(room_id, ticket_id, actor)
+
+    def restart_vote(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults:
+        self._require_owner(room_id, actor)
+        ticket = self.tickets.get(ticket_id)
+        if not ticket or ticket.room_id != room_id:
+            raise NotFoundError("Ticket not found")
+        self.votes = {
+            key: vote for key, vote in self.votes.items() if vote.ticket_id != ticket_id
+        }
+        ticket.vote_state = "voting"
+        ticket.vote_round += 1
+        ticket.revealed_at = None
+        ticket.final_estimate = None
+        return self.get_vote_results(room_id, ticket_id, actor)
+
+    def set_final_estimate(
+        self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
+    ) -> Ticket:
+        room = self._require_owner(room_id, actor)
+        ticket = self.tickets.get(ticket_id)
+        if not ticket or ticket.room_id != room_id:
+            raise NotFoundError("Ticket not found")
+        if ticket.vote_state != "revealed":
+            raise ConflictError("Reveal votes before setting the final estimate")
+        if value not in VOTE_VALUES[room.scale]:
+            raise ConflictError("That estimate is not part of this room's scale")
+        ticket.final_estimate = value
+        self._refresh_room_stats(room)
+        return deepcopy(ticket)
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self._require_member(room_id, actor)
@@ -308,8 +444,12 @@ class InMemoryRepository:
     def _refresh_room_stats(self, room: Room) -> None:
         room_tickets = [item for item in self.tickets.values() if item.room_id == room.id]
         room.ticket_count = len(room_tickets)
-        room.sized_count = sum(item.story_points is not None for item in room_tickets)
-        room.total_points = sum(item.story_points or 0 for item in room_tickets)
+        room.sized_count = sum(item.final_estimate is not None for item in room_tickets)
+        room.total_points = sum(
+            float(item.final_estimate)
+            for item in room_tickets
+            if item.final_estimate and item.final_estimate.replace(".", "", 1).isdigit()
+        )
         room.updated_at = datetime.now(UTC)
 
     def create_ticket(
@@ -677,12 +817,114 @@ class SupabaseRepository:
             },
             on_conflict="ticket_id,user_id",
         ).execute()
+        ticket = self._ticket_in_room(room_id, ticket_id)
         return VoteReceipt(
             room_id=room_id,
             ticket_id=ticket_id,
             user_id=actor.id,
             submitted_at=submitted_at,
+            revealed=ticket.vote_state == "revealed",
         )
+
+    def _ticket_in_room(self, room_id: UUID, ticket_id: UUID) -> Ticket:
+        result = (
+            self.client.table("tickets")
+            .select("*")
+            .eq("room_id", str(room_id))
+            .eq("id", str(ticket_id))
+            .limit(1)
+            .execute()
+        )
+        row = self._first(result.data)
+        if not row:
+            raise NotFoundError("Ticket not found")
+        return Ticket.model_validate(row)
+
+    def get_vote_results(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults:
+        self.get_room(room_id, actor)
+        ticket = self._ticket_in_room(room_id, ticket_id)
+        votes: list[RevealedVote] = []
+        if ticket.vote_state == "revealed":
+            vote_rows = (
+                self.client.table("votes")
+                .select("user_id,value")
+                .eq("room_id", str(room_id))
+                .eq("ticket_id", str(ticket_id))
+                .eq("revealed", True)
+                .execute()
+            )
+            members = (
+                self.client.table("room_members")
+                .select("user_id,display_name")
+                .eq("room_id", str(room_id))
+                .execute()
+            )
+            names = {str(row["user_id"]): row["display_name"] for row in members.data}
+            votes = [
+                RevealedVote(
+                    user_id=row["user_id"],
+                    display_name=names.get(str(row["user_id"]), "Participant"),
+                    value=row["value"],
+                )
+                for row in vote_rows.data
+            ]
+        return summarize_votes(room_id, ticket, votes)
+
+    def reveal_votes(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults:
+        self._require_owner_room(room_id, actor)
+        try:
+            self.client.rpc(
+                "reveal_ticket_votes",
+                {
+                    "p_room_id": str(room_id),
+                    "p_ticket_id": str(ticket_id),
+                    "p_actor_id": str(actor.id),
+                },
+            ).execute()
+        except APIError as error:
+            if error.code in {"22023", "P0002"}:
+                raise ConflictError(error.message) from error
+            raise
+        return self.get_vote_results(room_id, ticket_id, actor)
+
+    def restart_vote(
+        self, room_id: UUID, ticket_id: UUID, actor: Principal
+    ) -> VoteResults:
+        self._require_owner_room(room_id, actor)
+        self.client.rpc(
+            "restart_ticket_vote",
+            {
+                "p_room_id": str(room_id),
+                "p_ticket_id": str(ticket_id),
+                "p_actor_id": str(actor.id),
+            },
+        ).execute()
+        return self.get_vote_results(room_id, ticket_id, actor)
+
+    def set_final_estimate(
+        self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
+    ) -> Ticket:
+        room = self._require_owner_room(room_id, actor)
+        ticket = self._ticket_in_room(room_id, ticket_id)
+        if ticket.vote_state != "revealed":
+            raise ConflictError("Reveal votes before setting the final estimate")
+        if value not in VOTE_VALUES[room.scale]:
+            raise ConflictError("That estimate is not part of this room's scale")
+        result = (
+            self.client.table("tickets")
+            .update({"final_estimate": value})
+            .eq("room_id", str(room_id))
+            .eq("id", str(ticket_id))
+            .execute()
+        )
+        row = self._first(result.data)
+        if not row:
+            raise NotFoundError("Ticket not found")
+        return Ticket.model_validate(row)
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self.get_room(room_id, actor)

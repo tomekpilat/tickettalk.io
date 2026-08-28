@@ -27,6 +27,10 @@ const apiMock = vi.hoisted(() => ({
   reorderTickets: vi.fn(),
   setActiveTicket: vi.fn(),
   submitVote: vi.fn(),
+  voteResults: vi.fn(),
+  revealVotes: vi.fn(),
+  restartVote: vi.fn(),
+  setFinalEstimate: vi.fn(),
   estimate: vi.fn(),
 }))
 
@@ -59,6 +63,10 @@ beforeEach(() => {
   apiMock.touchPresence.mockResolvedValue({})
   apiMock.previewImport.mockResolvedValue({
     rows: [], errors: [], source_count: 0, saved_count: 0, skipped_count: 0,
+  })
+  apiMock.voteResults.mockResolvedValue({
+    room_id: roomId, ticket_id: 'ticket-1', state: 'voting', round: 1, votes: [],
+    average: null, minimum: null, maximum: null, consensus: null, final_estimate: null,
   })
 })
 
@@ -382,5 +390,53 @@ describe('active ticket synchronization', () => {
     ))
     expect(await screen.findByText('Vote submitted')).toBeVisible()
     expect(screen.queryByRole('button', { name: '13' })).not.toBeInTheDocument()
+  })
+})
+
+describe('vote reveal and final estimate', () => {
+  const ticket = { id: 'ticket-1', room_id: roomId, position: 0, issue_key: 'PAY-201', summary: 'Wallet alert', issue_type: 'Story', description: '', story_points: null, final_estimate: null, vote_state: 'voting', vote_round: 1 }
+  const nextTicket = { ...ticket, id: 'ticket-2', position: 1, issue_key: 'PAY-202', summary: 'Next ticket' }
+  const room = { id: roomId, owner_id: user.id, name: 'Reveal room', scale: 'fibonacci', reveal_mode: 'manual', active_ticket_id: ticket.id, ticket_count: 2, sized_count: 0, total_points: 0 }
+  const roster = [{ room_id: roomId, user_id: user.id, role: 'facilitator', display_name: user.displayName, is_online: true, has_voted: true }]
+  const revealed = { room_id: roomId, ticket_id: ticket.id, state: 'revealed', round: 1, votes: [{ user_id: user.id, display_name: user.displayName, value: '5' }], average: 5, minimum: 5, maximum: 5, consensus: 'unanimous', final_estimate: null }
+
+  it('reveals durable results and saves a final estimate before advancing', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets.mockResolvedValue([ticket, nextTicket])
+    apiMock.members.mockResolvedValue(roster)
+    apiMock.revealVotes.mockResolvedValue(revealed)
+    apiMock.setFinalEstimate.mockResolvedValue({ ...ticket, vote_state: 'revealed', final_estimate: '5' })
+    apiMock.setActiveTicket.mockResolvedValue({ ...room, active_ticket_id: nextTicket.id })
+
+    render(<App />)
+
+    expect(await screen.findByText('1 of 1 voted')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal votes' }))
+    expect(await screen.findByText('Unanimous')).toBeVisible()
+    expect(screen.getByText(user.displayName)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '5' }))
+    fireEvent.click(screen.getByRole('button', { name: /Save & next/ }))
+
+    await waitFor(() => expect(apiMock.setFinalEstimate).toHaveBeenCalledWith(roomId, ticket.id, '5'))
+    await waitFor(() => expect(apiMock.setActiveTicket).toHaveBeenCalledWith(roomId, nextTicket.id))
+  })
+
+  it('renders automatically revealed results after the final vote response', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets
+      .mockResolvedValueOnce([ticket, nextTicket])
+      .mockResolvedValue([{ ...ticket, vote_state: 'revealed' }, nextTicket])
+    apiMock.members.mockResolvedValue([{ ...roster[0], has_voted: false }])
+    apiMock.submitVote.mockResolvedValue({ room_id: roomId, ticket_id: ticket.id, user_id: user.id, has_voted: true, revealed: true })
+    apiMock.voteResults.mockResolvedValue(revealed)
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Wallet alert' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '5' }))
+
+    expect(await screen.findByText('Unanimous')).toBeVisible()
+    expect(apiMock.voteResults).toHaveBeenCalledWith(roomId, ticket.id)
   })
 })

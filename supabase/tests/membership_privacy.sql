@@ -31,6 +31,10 @@ values (
   'Private ticket'
 );
 
+update public.rooms
+set active_ticket_id = '20000000-0000-0000-0000-000000000021'
+where id = '10000000-0000-0000-0000-000000000021';
+
 insert into public.votes (room_id, ticket_id, user_id, value)
 values (
   '10000000-0000-0000-0000-000000000021',
