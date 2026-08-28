@@ -46,6 +46,9 @@ export const api = {
   setActiveTicket: (roomId, ticketId) => request(`/api/rooms/${roomId}/active-ticket`, {
     method: 'PATCH', body: JSON.stringify({ ticket_id: ticketId }),
   }),
+  submitVote: (roomId, ticketId, value) => request(`/api/rooms/${roomId}/tickets/${ticketId}/vote`, {
+    method: 'PUT', body: JSON.stringify({ value }),
+  }),
   tickets: (roomId) => request(`/api/rooms/${roomId}/tickets`),
   previewImport: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import/preview`, {
     method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),

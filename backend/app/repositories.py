@@ -18,9 +18,16 @@ from .models import (
     TicketCreate,
     TicketImportResult,
     TicketUpdate,
+    Vote,
+    VoteReceipt,
 )
 
 PRESENCE_WINDOW = timedelta(seconds=45)
+VOTE_VALUES = {
+    "fibonacci": {"0", "1", "2", "3", "5", "8", "13", "21", "?"},
+    "extended": {"1", "2", "3", "5", "8", "13", "21", "34", "55", "?"},
+    "tshirt": {"XS", "S", "M", "L", "XL", "?"},
+}
 
 
 class RepositoryError(Exception):
@@ -52,6 +59,9 @@ class Repository(Protocol):
     ) -> RoomMember: ...
     def list_members(self, room_id: UUID, actor: Principal) -> list[RoomMember]: ...
     def touch_presence(self, room_id: UUID, actor: Principal) -> RoomMember: ...
+    def submit_vote(
+        self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
+    ) -> VoteReceipt: ...
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]: ...
     def create_ticket(
         self, room_id: UUID, payload: TicketCreate, actor: Principal
@@ -76,6 +86,7 @@ class InMemoryRepository:
         self.rooms: dict[UUID, Room] = {}
         self.tickets: dict[UUID, Ticket] = {}
         self.members: dict[UUID, dict[UUID, RoomMember]] = {}
+        self.votes: dict[tuple[UUID, UUID], Vote] = {}
         if not seed:
             return
         room_id = UUID("10000000-0000-4000-8000-000000000001")
@@ -213,12 +224,18 @@ class InMemoryRepository:
         return deepcopy(member)
 
     def list_members(self, room_id: UUID, actor: Principal) -> list[RoomMember]:
-        self._require_member(room_id, actor)
+        room = self._require_member(room_id, actor)
         now = datetime.now(UTC)
         return [
             deepcopy(
                 member.model_copy(
-                    update={"is_online": now - member.last_seen_at <= PRESENCE_WINDOW}
+                    update={
+                        "is_online": now - member.last_seen_at <= PRESENCE_WINDOW,
+                        "has_voted": bool(
+                            room.active_ticket_id
+                            and (room.active_ticket_id, member.user_id) in self.votes
+                        ),
+                    }
                 )
             )
             for member in sorted(
@@ -235,6 +252,37 @@ class InMemoryRepository:
         member.last_seen_at = datetime.now(UTC)
         member.is_online = True
         return deepcopy(member)
+
+    def submit_vote(
+        self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
+    ) -> VoteReceipt:
+        room = self._require_member(room_id, actor)
+        if actor.id not in self.members.get(room_id, {}):
+            raise ForbiddenError("Join the room before voting")
+        if room.active_ticket_id != ticket_id:
+            raise ConflictError("Votes are accepted only for the active ticket")
+        if value not in VOTE_VALUES[room.scale]:
+            raise ConflictError("That vote is not part of this room's scale")
+        if any(
+            vote.ticket_id == ticket_id and vote.revealed
+            for vote in self.votes.values()
+        ):
+            raise ConflictError("Voting is locked after reveal")
+        submitted_at = datetime.now(UTC)
+        vote = Vote(
+            room_id=room_id,
+            ticket_id=ticket_id,
+            user_id=actor.id,
+            value=value,
+            submitted_at=submitted_at,
+        )
+        self.votes[(ticket_id, actor.id)] = vote
+        return VoteReceipt(
+            room_id=room_id,
+            ticket_id=ticket_id,
+            user_id=actor.id,
+            submitted_at=submitted_at,
+        )
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self._require_member(room_id, actor)
@@ -595,6 +643,46 @@ class SupabaseRepository:
         if not row:
             raise ForbiddenError("Join the room before updating presence")
         return self._member_from_row(row)
+
+    def submit_vote(
+        self, room_id: UUID, ticket_id: UUID, value: str, actor: Principal
+    ) -> VoteReceipt:
+        room = self.get_room(room_id, actor)
+        if not self._membership(room_id, actor):
+            raise ForbiddenError("Join the room before voting")
+        if room.active_ticket_id != ticket_id:
+            raise ConflictError("Votes are accepted only for the active ticket")
+        if value not in VOTE_VALUES[room.scale]:
+            raise ConflictError("That vote is not part of this room's scale")
+        revealed = (
+            self.client.table("votes")
+            .select("ticket_id")
+            .eq("room_id", str(room_id))
+            .eq("ticket_id", str(ticket_id))
+            .eq("revealed", True)
+            .limit(1)
+            .execute()
+        )
+        if self._first(revealed.data):
+            raise ConflictError("Voting is locked after reveal")
+        submitted_at = datetime.now(UTC)
+        self.client.table("votes").upsert(
+            {
+                "room_id": str(room_id),
+                "ticket_id": str(ticket_id),
+                "user_id": str(actor.id),
+                "value": value,
+                "revealed": False,
+                "updated_at": submitted_at.isoformat(),
+            },
+            on_conflict="ticket_id,user_id",
+        ).execute()
+        return VoteReceipt(
+            room_id=room_id,
+            ticket_id=ticket_id,
+            user_id=actor.id,
+            submitted_at=submitted_at,
+        )
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
         self.get_room(room_id, actor)

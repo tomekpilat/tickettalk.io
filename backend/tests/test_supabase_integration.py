@@ -144,6 +144,40 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
         reconnected = client.get(f"/api/rooms/{room_id}", headers=member_headers)
         assert reconnected.json()["active_ticket_id"] == manual_ticket_id
 
+        owner_vote = client.put(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/vote",
+            json={"value": "5"},
+            headers=owner_headers,
+        )
+        member_vote = client.put(
+            f"/api/rooms/{room_id}/tickets/{manual_ticket_id}/vote",
+            json={"value": "8"},
+            headers=member_headers,
+        )
+        assert owner_vote.status_code == member_vote.status_code == 200
+        assert "value" not in owner_vote.json()
+        assert "value" not in member_vote.json()
+        roster = client.get(
+            f"/api/rooms/{room_id}/members", headers=member_headers
+        ).json()
+        assert len([person for person in roster if person["has_voted"]]) == 2
+
+        owner_direct_votes = (
+            owner_auth.table("votes")
+            .select("user_id,value")
+            .eq("ticket_id", manual_ticket_id)
+            .execute()
+        )
+        assert len(owner_direct_votes.data) == 1
+        assert owner_direct_votes.data[0]["user_id"] == str(owner.id)
+        safe_statuses = (
+            owner_auth.table("vote_statuses")
+            .select("user_id")
+            .eq("ticket_id", manual_ticket_id)
+            .execute()
+        )
+        assert len(safe_statuses.data) == 2
+
         denied = client.post(
             f"/api/rooms/{room_id}/tickets",
             json={"summary": "Member mutation"},

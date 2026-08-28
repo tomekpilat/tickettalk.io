@@ -338,3 +338,65 @@ def test_active_ticket_navigation_is_shared_owner_only_and_stable() -> None:
         assert reconnect.json()["active_ticket_id"] == tickets[1]["id"]
     finally:
         clear_overrides()
+
+
+def test_votes_are_private_upserted_active_and_scale_bound() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room_id = client.post("/api/rooms", json={"name": "Private vote room"}).json()["id"]
+    tickets = [
+        client.post(
+            f"/api/rooms/{room_id}/tickets", json={"summary": f"Ticket {index}"}
+        ).json()
+        for index in range(1, 3)
+    ]
+    client.patch(
+        f"/api/rooms/{room_id}/active-ticket",
+        json={"ticket_id": tickets[0]["id"]},
+    )
+    try:
+        submitted = client.put(
+            f"/api/rooms/{room_id}/tickets/{tickets[0]['id']}/vote",
+            json={"value": "5"},
+        )
+        assert submitted.status_code == 200
+        assert submitted.json()["has_voted"] is True
+        assert "value" not in submitted.json()
+
+        changed = client.put(
+            f"/api/rooms/{room_id}/tickets/{tickets[0]['id']}/vote",
+            json={"value": "8"},
+        )
+        assert changed.status_code == 200
+        assert len(repository.votes) == 1
+        vote_key = (UUID(tickets[0]["id"]), OWNER.id)
+        assert repository.votes[vote_key].value == "8"
+
+        inactive = client.put(
+            f"/api/rooms/{room_id}/tickets/{tickets[1]['id']}/vote",
+            json={"value": "5"},
+        )
+        assert inactive.status_code == 409
+        invalid_scale = client.put(
+            f"/api/rooms/{room_id}/tickets/{tickets[0]['id']}/vote",
+            json={"value": "34"},
+        )
+        assert invalid_scale.status_code == 409
+
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        assert client.put(
+            f"/api/rooms/{room_id}/tickets/{tickets[0]['id']}/vote",
+            json={"value": "13"},
+        ).status_code == 403
+        client.post(f"/api/rooms/{room_id}/join", json={"display_name": "Sam"})
+        member_vote = client.put(
+            f"/api/rooms/{room_id}/tickets/{tickets[0]['id']}/vote",
+            json={"value": "13"},
+        )
+        assert member_vote.status_code == 200
+        assert "value" not in member_vote.json()
+
+        roster = client.get(f"/api/rooms/{room_id}/members").json()
+        assert len([member for member in roster if member["has_voted"]]) == 2
+    finally:
+        clear_overrides()

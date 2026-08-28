@@ -16,13 +16,6 @@ const scaleChoices = [
   { value: 'tshirt', label: 'T-shirt', hint: 'XS · S · M · L · XL' },
 ]
 
-const team = [
-  { name: 'You', initials: 'TP' },
-  { name: 'Maya', initials: 'MO' },
-  { name: 'Alex', initials: 'AK' },
-  { name: 'Jo', initials: 'JL' },
-]
-
 const sampleImport = 'Issue key,Summary,Issue Type\nPAY-201,Add wallet balance alert,Story\nPAY-205,Fix duplicate webhook delivery,Bug'
 const emptyTicketDraft = { issue_key: '', summary: '', issue_type: 'Story', description: '' }
 
@@ -60,8 +53,9 @@ function Workspace({ user }) {
   const [members, setMembers] = useState([])
   const [tickets, setTickets] = useState([])
   const [ticketIndex, setTicketIndex] = useState(0)
-  const [selectedVote, setSelectedVote] = useState(null)
-  const [revealed, setRevealed] = useState(false)
+  const [voteSubmitted, setVoteSubmitted] = useState(false)
+  const [choosingVote, setChoosingVote] = useState(false)
+  const [submittingVote, setSubmittingVote] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
   const [roomName, setRoomName] = useState('Sprint 43 planning')
   const [roomScale, setRoomScale] = useState('fibonacci')
@@ -113,6 +107,8 @@ function Workspace({ user }) {
       setRoom(nextRoom)
       setTickets(nextTickets)
       setMembers(nextMembers)
+      setVoteSubmitted(nextMembers.some((member) => member.user_id === user.id && member.has_voted))
+      setChoosingVote(false)
       setTicketIndex(Math.max(0, nextTickets.findIndex((ticket) => ticket.id === nextRoom.active_ticket_id)))
       setView(nextRoom.active_ticket_id ? 'session' : nextTickets.length ? 'backlog' : 'import')
       setApiOnline(true)
@@ -174,16 +170,16 @@ function Workspace({ user }) {
             (ticket) => ticket.id === freshRoom.active_ticket_id
           )
           if (activeIndex >= 0) {
-            if (freshRoom.active_ticket_id !== room.active_ticket_id) {
-              setSelectedVote(null)
-              setRevealed(false)
-            }
+            setVoteSubmitted(freshMembers.some(
+              (member) => member.user_id === user.id && member.has_voted
+            ))
+            if (freshRoom.active_ticket_id !== room.active_ticket_id) setChoosingVote(false)
             setTicketIndex(activeIndex)
             setView('session')
           }
         } else if (room.active_ticket_id) {
-          setSelectedVote(null)
-          setRevealed(false)
+          setVoteSubmitted(false)
+          setChoosingVote(false)
           setView(freshTickets.length ? 'backlog' : 'import')
         }
       } catch { /* the next user action will surface connectivity or authorization */ }
@@ -356,8 +352,8 @@ function Workspace({ user }) {
       setRoom(freshRoom)
       setToast('Ticket removed')
       if (ticket.id === room.active_ticket_id) {
-        setSelectedVote(null)
-        setRevealed(false)
+        setVoteSubmitted(false)
+        setChoosingVote(false)
         const replacementIndex = remaining.findIndex(
           (item) => item.id === freshRoom.active_ticket_id
         )
@@ -396,20 +392,27 @@ function Workspace({ user }) {
       const updatedRoom = await api.setActiveTicket(room.id, target.id)
       setRoom(updatedRoom)
       setTicketIndex(index)
-      setSelectedVote(null)
-      setRevealed(false)
+      setVoteSubmitted(false)
+      setChoosingVote(false)
       setView('session')
     } catch (error) {
       setToast(error.message)
     }
   }
 
-  const saveEstimate = async (points) => {
-    const numeric = Number(points)
-    setTickets((items) => items.map((item, index) => (
-      index === ticketIndex ? { ...item, story_points: numeric } : item
-    )))
-    try { await api.estimate(current.id, numeric) } catch (error) { setToast(error.message) }
+  const submitVote = async (value) => {
+    if (!current || submittingVote) return
+    setSubmittingVote(true)
+    try {
+      await api.submitVote(room.id, current.id, value)
+      setVoteSubmitted(true)
+      setChoosingVote(false)
+      await refreshMembers(room.id)
+    } catch (error) {
+      setToast(error.message)
+    } finally {
+      setSubmittingVote(false)
+    }
   }
 
   const exportCsv = () => {
@@ -427,6 +430,7 @@ function Workspace({ user }) {
   }
 
   const nextTicket = () => openTicket(ticketIndex + 1)
+  const votedCount = members.filter((member) => member.has_voted).length
 
   const shareRoom = async () => {
     const url = `${window.location.origin}${roomPath(room.id)}`
@@ -572,8 +576,8 @@ function Workspace({ user }) {
       <main className="session-main">
         <ParticipantRoster members={members} currentUserId={user.id} compact />
         <section className="story-copy"><p className="eyebrow">{current?.issue_key} · {current?.issue_type}</p><h1>{current?.summary}</h1>{showDetail && <p className="description">{current?.description || 'No ticket description supplied.'}</p>}</section>
-        <section className="vote-area"><p className="micro-label">Choose your estimate</p><div className="cards">{votingScale.map((value) => <button key={value} className={selectedVote === value ? 'selected' : ''} onClick={() => { setSelectedVote(value); setRevealed(false) }}>{value}</button>)}</div></section>
-        {!revealed ? <section className="waiting"><div className="avatars">{team.map((person, index) => <span className={index === 0 && selectedVote ? 'voted' : index > 0 ? 'voted' : ''} key={person.initials}>{person.initials}</span>)}</div><p>{selectedVote ? '4 of 4 voted' : '3 of 4 voted · waiting for you'}</p><button className="reveal" disabled={!selectedVote} onClick={() => setRevealed(true)}>Reveal cards</button></section> : <Results selected={selectedVote} onEstimate={saveEstimate} onNext={nextTicket} onRevote={() => setRevealed(false)} />}
+        {(!voteSubmitted || choosingVote) ? <section className="vote-area"><p className="micro-label">{voteSubmitted ? 'Choose a replacement estimate' : 'Choose your estimate'}</p><div className="cards">{votingScale.map((value) => <button key={value} disabled={submittingVote} onClick={() => submitVote(value)}>{value}</button>)}</div></section> : <section className="vote-safe-state" role="status"><strong>Vote submitted</strong><span>Your estimate stays hidden until the facilitator reveals the cards.</span><button className="secondary" onClick={() => setChoosingVote(true)}>Change vote</button></section>}
+        <section className="waiting"><div className="avatars">{members.map((member) => <span className={member.has_voted ? 'voted' : ''} key={member.user_id}>{initials(member.display_name)}</span>)}</div><p>{votedCount} of {members.length} voted</p>{isFacilitator && <button className="reveal" disabled>Reveal votes</button>}</section>
       </main>
       <footer className="ticket-rail"><button disabled={!isFacilitator || ticketIndex === 0} onClick={() => openTicket(ticketIndex - 1)} aria-label="Previous ticket">←</button><div>{tickets.map((item, index) => <button key={item.id} disabled={!isFacilitator} className={index === ticketIndex ? 'active' : item.story_points != null ? 'done' : ''} onClick={() => openTicket(index)} aria-label={`Open ticket ${index + 1}`}>{String(index + 1).padStart(2, '0')}</button>)}</div><button disabled={!isFacilitator || ticketIndex === tickets.length - 1} onClick={nextTicket} aria-label="Next ticket">→</button></footer>
       {toast && <Toast>{toast}</Toast>}
@@ -619,7 +623,8 @@ function JoinRoom({ roomId, hasAnonymousSession = false, defaultName = '', onJoi
 function ParticipantRoster({ members, currentUserId, compact = false }) {
   return <section className={compact ? 'participant-roster compact' : 'participant-roster panel'} aria-label="Participants"><div className="roster-heading"><span>Participants</span><small>{members.filter((member) => member.is_online).length} online · {members.length} joined</small></div><div className="roster-list">{members.map((member) => {
     const status = member.has_voted ? 'Voted' : member.is_online ? 'Joined' : 'Disconnected'
-    return <div className="roster-person" key={member.user_id}><span className={member.is_online ? 'roster-avatar online' : 'roster-avatar'}>{initials(member.display_name)}</span><span><strong>{member.user_id === currentUserId ? `${member.display_name} (you)` : member.display_name}</strong><small>{member.role === 'facilitator' ? 'Facilitator' : status}</small></span><i className={member.has_voted ? 'member-status voted' : member.is_online ? 'member-status' : 'member-status offline'} aria-label={status} /></div>
+    const roleStatus = member.role === 'facilitator' ? `Facilitator${member.has_voted ? ' · voted' : ''}` : status
+    return <div className="roster-person" key={member.user_id}><span className={member.is_online ? 'roster-avatar online' : 'roster-avatar'}>{initials(member.display_name)}</span><span><strong>{member.user_id === currentUserId ? `${member.display_name} (you)` : member.display_name}</strong><small>{roleStatus}</small></span><i className={member.has_voted ? 'member-status voted' : member.is_online ? 'member-status' : 'member-status offline'} aria-label={status} /></div>
   })}</div></section>
 }
 
@@ -660,12 +665,6 @@ function TicketEditor({ draft, setDraft, editing, error, onClose, onSave }) {
 function RoomSettings({ draft, setDraft, ticketCount, error, onClose, onSave }) {
   const locked = ticketCount > 0
   return <div className="modal-backdrop" role="presentation"><section className="settings-panel panel" role="dialog" aria-modal="true" aria-labelledby="room-settings-title"><div className="panel-label"><span id="room-settings-title">Room settings</span><button onClick={onClose} aria-label="Close settings">×</button></div><label>Room name<input value={draft.name} maxLength={120} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Scale<select value={draft.scale} disabled={locked} onChange={(event) => setDraft({ ...draft, scale: event.target.value })}>{scaleChoices.map((choice) => <option value={choice.value} key={choice.value}>{choice.label}</option>)}</select></label><label>Reveal<select value={draft.reveal_mode} disabled={locked} onChange={(event) => setDraft({ ...draft, reveal_mode: event.target.value })}><option value="manual">Manual</option><option value="auto">When all voted</option></select></label>{locked && <p className="settings-note">Scale and reveal mode lock after tickets are added.</p>}{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" onClick={onSave}>Save settings</button></div></section></div>
-}
-
-function Results({ selected, onEstimate, onNext, onRevote }) {
-  const [finalEstimate, setFinalEstimate] = useState(!Number.isNaN(Number(selected)) ? selected : '5')
-  const votes = [selected, '5', '8', '5']
-  return <section className="results"><div className="result-cards">{team.map((person, index) => <div key={person.initials}><strong>{votes[index]}</strong><span>{person.name}</span></div>)}</div><div className="consensus"><div><strong>5.8</strong><span>Average</span></div><div><strong>5–8</strong><span>Range</span></div><div><strong className="good">Close</strong><span>Consensus</span></div></div><div className="final-estimate"><p className="micro-label">Set final estimate</p><div>{['0', '1', '2', '3', '5', '8', '13', '21'].map((point) => <button className={finalEstimate === point ? 'active' : ''} key={point} onClick={() => setFinalEstimate(point)}>{point}</button>)}</div></div><div className="result-actions"><button className="secondary" onClick={onRevote}>Re-vote</button><button className="primary" onClick={() => { onEstimate(finalEstimate); onNext() }}>Save & next <span>→</span></button></div></section>
 }
 
 function CenteredState({ eyebrow, title, detail, action }) {

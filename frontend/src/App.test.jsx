@@ -26,6 +26,7 @@ const apiMock = vi.hoisted(() => ({
   deleteTicket: vi.fn(),
   reorderTickets: vi.fn(),
   setActiveTicket: vi.fn(),
+  submitVote: vi.fn(),
   estimate: vi.fn(),
 }))
 
@@ -324,7 +325,7 @@ describe('active ticket synchronization', () => {
     expect(screen.getByText('PAY-205 · Bug')).toBeVisible()
   })
 
-  it('moves a member through Realtime and clears their transient vote', async () => {
+  it('moves a member through Realtime and clears their ticket-scoped vote status', async () => {
     const member = {
       id: '00000000-0000-0000-0000-000000000099',
       displayName: 'Maya Chen',
@@ -340,16 +341,46 @@ describe('active ticket synchronization', () => {
     render(<App />)
 
     expect(await screen.findByRole('heading', { name: 'Wallet alert' })).toBeVisible()
-    const five = screen.getByRole('button', { name: '5' })
-    fireEvent.click(five)
-    expect(five).toHaveClass('selected')
+    fireEvent.click(screen.getByRole('button', { name: '5' }))
+    expect(await screen.findByText('Vote submitted')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Next ticket' })).toBeDisabled()
 
     apiMock.room.mockResolvedValue(secondActiveRoom)
     await act(async () => realtimeMock.callback())
 
     expect(await screen.findByRole('heading', { name: 'Webhook retry' })).toBeVisible()
-    expect(screen.getByRole('button', { name: '5' })).not.toHaveClass('selected')
+    expect(screen.getByRole('button', { name: '5' })).toBeVisible()
+    expect(screen.queryByText('Vote submitted')).not.toBeInTheDocument()
     expect(apiMock.setActiveTicket).not.toHaveBeenCalled()
+  })
+
+  it('submits and changes a vote without echoing the facilitator value', async () => {
+    const activeRoom = { ...room, active_ticket_id: ticketOne.id }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(activeRoom)
+    apiMock.tickets.mockResolvedValue([ticketOne, ticketTwo])
+    apiMock.submitVote.mockResolvedValue({
+      room_id: roomId,
+      ticket_id: ticketOne.id,
+      user_id: user.id,
+      has_voted: true,
+    })
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Wallet alert' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '8' }))
+    await waitFor(() => expect(apiMock.submitVote).toHaveBeenCalledWith(roomId, ticketOne.id, '8'))
+    expect(await screen.findByText('Vote submitted')).toBeVisible()
+    expect(screen.queryByRole('button', { name: '8' })).not.toBeInTheDocument()
+    expect(screen.getByText(/estimate stays hidden/)).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change vote' }))
+    fireEvent.click(screen.getByRole('button', { name: '13' }))
+    await waitFor(() => expect(apiMock.submitVote).toHaveBeenLastCalledWith(
+      roomId, ticketOne.id, '13',
+    ))
+    expect(await screen.findByText('Vote submitted')).toBeVisible()
+    expect(screen.queryByRole('button', { name: '13' })).not.toBeInTheDocument()
   })
 })

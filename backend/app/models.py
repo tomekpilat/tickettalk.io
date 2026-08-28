@@ -151,6 +151,31 @@ class ActiveTicketUpdate(BaseModel):
     ticket_id: UUID | None
 
 
+class VoteSubmission(BaseModel):
+    value: str = Field(min_length=1, max_length=8)
+
+    @field_validator("value")
+    @classmethod
+    def normalize_value(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("Choose a vote")
+        return normalized
+
+
+class VoteReceipt(BaseModel):
+    room_id: UUID
+    ticket_id: UUID
+    user_id: UUID
+    has_voted: bool = True
+    submitted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class Vote(VoteReceipt):
+    value: str
+    revealed: bool = False
+
+
 DuplicateBehavior = Literal["error", "skip", "replace"]
 ImportAction = Literal["import", "skip", "replace"]
 

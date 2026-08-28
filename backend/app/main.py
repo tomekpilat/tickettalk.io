@@ -24,6 +24,8 @@ from .models import (
     TicketImportResult,
     TicketOrder,
     TicketUpdate,
+    VoteReceipt,
+    VoteSubmission,
 )
 from .repositories import (
     ConflictError,
@@ -133,6 +135,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
     ) -> RoomMember:
         return repository.touch_presence(room_id, actor)
+
+    @app.put(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/vote",
+        response_model=VoteReceipt,
+    )
+    def submit_vote(
+        room_id: UUID,
+        ticket_id: UUID,
+        payload: VoteSubmission,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteReceipt:
+        return repository.submit_vote(room_id, ticket_id, payload.value, actor)
 
     @app.get("/api/rooms/{room_id}/tickets", response_model=list[Ticket])
     def list_tickets(
