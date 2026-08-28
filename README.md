@@ -77,3 +77,5 @@ npm run build
 ## Production configuration
 
 Set `APP_ENV=production` and `VITE_APP_ENV=production`, provide all Supabase values from `.env.example`, and configure the deployed frontend URL in both `FRONTEND_ORIGIN` and the Supabase Auth redirect allow-list. The frontend subscribes to room, membership, ticket, and vote changes through Realtime.
+
+The production Compose topology, Coolify variables, first-deploy checks, rollback, rotation, and backup responsibilities are documented in [`docs/deployment.md`](docs/deployment.md).
