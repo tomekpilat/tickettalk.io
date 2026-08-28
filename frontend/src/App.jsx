@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { sendMagicLink, signInAsMember, signOut, useAuth } from './lib/auth.js'
+import { setAnonymousDisplayName, useAuth } from './lib/auth.js'
 import { api } from './lib/api.js'
 import { isRoomLikePath, pushPath, roomIdFromPath, roomPath } from './lib/routing.js'
 import { subscribeToRoom } from './lib/supabase.js'
@@ -36,13 +36,12 @@ function App() {
   if ((!auth.user || joiningRoomId === sharedRoomId) && sharedRoomId) return (
     <JoinRoom
       roomId={sharedRoomId}
-      hasAnonymousSession={Boolean(auth.user?.isAnonymous)}
       onJoining={() => setJoiningRoomId(sharedRoomId)}
       onJoined={() => setJoiningRoomId(null)}
     />
   )
   if (!auth.user && isRoomLikePath()) return <CenteredState eyebrow="Room access" title="Room link not recognized." detail="Check the URL and ask the facilitator for a new link." />
-  if (!auth.user) return <SignIn />
+  if (!auth.user) return <CenteredState eyebrow="Session" title="A private browser session could not be created." detail="Refresh the page to try again." />
   return <Workspace user={auth.user} />
 }
 
@@ -59,6 +58,9 @@ function Workspace({ user }) {
   const [voteResults, setVoteResults] = useState(null)
   const [showDetail, setShowDetail] = useState(false)
   const [roomName, setRoomName] = useState('Sprint 43 planning')
+  const [facilitatorName, setFacilitatorName] = useState(
+    user.displayName === 'Guest' || user.displayName === 'Facilitator' ? '' : user.displayName,
+  )
   const [roomScale, setRoomScale] = useState('fibonacci')
   const [revealMode, setRevealMode] = useState('manual')
   const [importText, setImportText] = useState(sampleImport)
@@ -254,16 +256,23 @@ function Workspace({ user }) {
 
   const createRoom = async () => {
     setFormError('')
+    const normalizedFacilitatorName = facilitatorName.trim().replace(/\s+/g, ' ')
+    if (!normalizedFacilitatorName) {
+      setFormError('Enter your name to create a room.')
+      return
+    }
     if (roomName.trim().length < 3) {
       setFormError('Room name needs at least 3 characters.')
       return
     }
     setCreating(true)
     try {
+      await setAnonymousDisplayName(normalizedFacilitatorName)
       const created = await api.createRoom({
         name: roomName,
         scale: roomScale,
         reveal_mode: revealMode,
+        display_name: normalizedFacilitatorName,
       })
       setRoom(created)
       setRooms((items) => [created, ...items])
@@ -558,7 +567,6 @@ function Workspace({ user }) {
   if (view === 'route-error' && routeError?.status === 403 && user.isAnonymous) return (
     <JoinRoom
       roomId={roomIdFromPath()}
-      hasAnonymousSession
       defaultName={user.displayName}
       onJoined={() => openRoom(roomIdFromPath(), { push: false })}
     />
@@ -580,6 +588,8 @@ function Workspace({ user }) {
         <section className="rooms-grid">
           <div className="new-room panel">
             <div className="panel-label"><span>New room</span><small>01</small></div>
+            <p className="settings-note">No registration. The unique room link is the private access key for your team.</p>
+            <label>Your name<input value={facilitatorName} onChange={(event) => setFacilitatorName(event.target.value)} maxLength={80} placeholder="e.g. Maya" /></label>
             <label>Room name<input value={roomName} onChange={(event) => setRoomName(event.target.value)} maxLength={120} /></label>
             <fieldset className="choice-field"><legend>Scale</legend>{scaleChoices.map((choice) => <button key={choice.value} className={roomScale === choice.value ? 'choice active' : 'choice'} onClick={() => setRoomScale(choice.value)}><strong>{choice.label}</strong><small>{choice.hint}</small></button>)}</fieldset>
             <fieldset className="choice-field"><legend>Reveal</legend><div className="segmented"><button className={revealMode === 'manual' ? 'active' : ''} onClick={() => setRevealMode('manual')}>Manual</button><button className={revealMode === 'auto' ? 'active' : ''} onClick={() => setRevealMode('auto')}>When all voted</button></div></fieldset>
@@ -665,7 +675,7 @@ function Workspace({ user }) {
   )
 }
 
-function JoinRoom({ roomId, hasAnonymousSession = false, defaultName = '', onJoining, onJoined }) {
+function JoinRoom({ roomId, defaultName = '', onJoining, onJoined }) {
   const [displayName, setDisplayName] = useState(defaultName)
   const [message, setMessage] = useState('')
   const [joining, setJoining] = useState(false)
@@ -682,7 +692,7 @@ function JoinRoom({ roomId, hasAnonymousSession = false, defaultName = '', onJoi
     setMessage('')
     onJoining?.()
     try {
-      if (!hasAnonymousSession) await signInAsMember(normalizedName)
+      await setAnonymousDisplayName(normalizedName)
       await api.joinRoom(roomId, normalizedName)
       setJoined(true)
       onJoined?.()
@@ -706,28 +716,6 @@ function ParticipantRoster({ members, currentUserId, compact = false }) {
     const roleStatus = member.role === 'facilitator' ? `Facilitator${member.has_voted ? ' · voted' : ''}` : status
     return <div className="roster-person" key={member.user_id}><span className={member.is_online ? 'roster-avatar online' : 'roster-avatar'}>{initials(member.display_name)}</span><span><strong>{member.user_id === currentUserId ? `${member.display_name} (you)` : member.display_name}</strong><small>{roleStatus}</small></span><i className={member.has_voted ? 'member-status voted' : member.is_online ? 'member-status' : 'member-status offline'} aria-label={status} /></div>
   })}</div></section>
-}
-
-function SignIn() {
-  const [email, setEmail] = useState('')
-  const [message, setMessage] = useState('')
-  const [sending, setSending] = useState(false)
-
-  const submit = async (event) => {
-    event.preventDefault()
-    setSending(true)
-    setMessage('')
-    try {
-      await sendMagicLink(email)
-      setMessage('Check your email for the sign-in link.')
-    } catch (error) {
-      setMessage(error.message)
-    } finally {
-      setSending(false)
-    }
-  }
-
-  return <div className="auth-page"><Logo /><form className="auth-panel panel" onSubmit={submit}><p className="eyebrow">Facilitator access</p><h1>Sign in to create a room.</h1><p>We’ll email you a secure sign-in link. Team members join separately through the room URL.</p><label>Work email<input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>{message && <p className="auth-message">{message}</p>}<button className="primary wide" disabled={sending}>{sending ? 'Sending link…' : 'Email me a sign-in link'} <span>→</span></button></form></div>
 }
 
 function BacklogTable({ tickets, isFacilitator, onOpen, onEdit, onDelete, onMove }) {
@@ -771,8 +759,7 @@ function Toast({ children }) { return <div className="toast" role="status">{chil
 function Back({ children, onClick }) { return <button className="back" onClick={onClick}>← {children}</button> }
 
 function Shell({ children, status, user, onRooms }) {
-  const logOut = async () => { await signOut(); pushPath('/') }
-  return <div><header className="app-header"><button className="logo-button" onClick={onRooms}><Logo /></button><nav><button onClick={onRooms}>Rooms</button><button disabled>People</button>{!user.isDevelopment && <button onClick={logOut}>Sign out</button>}<button className="avatar" aria-label={user.displayName}>{initials(user.displayName)}</button></nav></header>{children}<footer className="app-footer"><Logo /><span><i className={status ? 'online' : ''} /> {status ? 'API connected' : 'API unavailable'}</span></footer></div>
+  return <div><header className="app-header"><button className="logo-button" onClick={onRooms}><Logo /></button><nav><button onClick={onRooms}>Rooms</button><button disabled>People</button><button className="avatar" aria-label={user.displayName}>{initials(user.displayName)}</button></nav></header>{children}<footer className="app-footer"><Logo /><span><i className={status ? 'online' : ''} /> {status ? 'API connected' : 'API unavailable'}</span></footer></div>
 }
 
 export default App

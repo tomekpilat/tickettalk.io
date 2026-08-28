@@ -42,7 +42,7 @@ def test_current_principal_requires_a_valid_bearer_session() -> None:
     assert missing.value.headers == {"WWW-Authenticate": "Bearer"}
 
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="expired")
-    with pytest.raises(HTTPException, match="Session is invalid"):
+    with pytest.raises(HTTPException, match="Browser session is invalid"):
         get_current_principal(credentials, authenticator)
     assert authenticator.tokens == ["expired"]
 

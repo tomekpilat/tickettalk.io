@@ -42,13 +42,13 @@ RATE_LIMIT_IMPORT_PER_MINUTE=12
 RATE_LIMIT_VOTE_PER_MINUTE=120
 ```
 
-Compose uses required-variable expressions, so a build with an incomplete environment stops before deployment. In Supabase Auth, enable anonymous sign-ins and add `https://tickettalk.io/**` to the redirect allow-list. Apply all migrations in `supabase/migrations` before inviting users.
+Compose uses required-variable expressions, so a build with an incomplete environment stops before deployment. In Supabase Auth, enable anonymous sign-ins; email providers and redirect allow-list entries are not required. Apply all migrations in `supabase/migrations` before inviting users.
 
 ## First deployment checks
 
 1. Deploy and wait for both Coolify health checks to become green.
 2. Confirm `https://tickettalk.io/healthz` returns `200`, `https://api.tickettalk.io/health` returns `{"status":"ok"}`, and `https://api.tickettalk.io/health/ready` returns `{"status":"ready"}`.
-3. Create a room, open its URL in a private browser, join, vote, reveal, and export.
+3. Without registering, create a room, copy its UUID URL, open that exact URL in a private browser, join, vote, reveal, and export. Confirm that a different UUID returns an unavailable-room response.
 4. Inspect the built web assets and browser network log: `SUPABASE_SERVICE_ROLE_KEY` must not appear anywhere.
 5. Confirm cross-origin API calls originate only from `https://tickettalk.io` and produce no mixed-content errors.
 

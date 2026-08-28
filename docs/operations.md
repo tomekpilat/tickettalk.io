@@ -56,4 +56,4 @@ Application logs should be retained for 30 days unless an incident or legal requ
 
 ## Secret rotation and rollback
 
-Use the deployment runbook for normal deploys, rollback, and key rotation. After any rotation, verify liveness, readiness, anonymous join, facilitator sign-in, Realtime updates, and export before revoking the old key. A Supabase service-role key must exist only in the API service runtime environment.
+Use the deployment runbook for normal deploys, rollback, and key rotation. After any rotation, verify liveness, readiness, registration-free room creation, anonymous join through the exact UUID URL, Realtime updates, and export before revoking the old key. A Supabase service-role key must exist only in the API service runtime environment.

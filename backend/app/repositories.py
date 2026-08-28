@@ -217,7 +217,11 @@ class InMemoryRepository:
         return deepcopy(self._require_member(room_id, actor))
 
     def create_room(self, payload: RoomCreate, actor: Principal) -> Room:
-        room = Room(owner_id=actor.id, **payload.model_dump())
+        display_name = payload.display_name or actor.display_name
+        room = Room(
+            owner_id=actor.id,
+            **payload.model_dump(exclude={"display_name"}),
+        )
         self.rooms[room.id] = room
         now = datetime.now(UTC)
         self.members[room.id] = {
@@ -225,7 +229,7 @@ class InMemoryRepository:
                 room_id=room.id,
                 user_id=actor.id,
                 role="facilitator",
-                display_name=actor.display_name,
+                display_name=display_name,
                 joined_at=now,
                 last_seen_at=now,
                 is_online=True,
@@ -633,11 +637,12 @@ class SupabaseRepository:
         return Room.model_validate(row)
 
     def create_room(self, payload: RoomCreate, actor: Principal) -> Room:
+        display_name = payload.display_name or actor.display_name
         result = self.client.rpc(
             "create_room_with_facilitator",
             {
                 "p_owner_id": str(actor.id),
-                "p_display_name": actor.display_name,
+                "p_display_name": display_name,
                 "p_name": payload.name,
                 "p_scale": payload.scale,
                 "p_reveal_mode": payload.reveal_mode,

@@ -54,12 +54,15 @@ def test_ticket_order_requires_unique_ids() -> None:
 
 
 def test_room_models_normalize_and_validate_names() -> None:
-    assert RoomCreate(name="  Sprint   planning ").name == "Sprint planning"
+    room = RoomCreate(name="  Sprint   planning ", display_name="  Maya   Chen ")
+    assert room.name == "Sprint planning"
+    assert room.display_name == "Maya Chen"
     assert RoomUpdate(name="  Next   sprint ").name == "Next sprint"
     assert RoomJoin(display_name="  Maya   Chen ").display_name == "Maya Chen"
 
     for factory in (
         lambda: RoomCreate(name=" x "),
+        lambda: RoomCreate(name="Valid room", display_name=" "),
         lambda: RoomUpdate(),
         lambda: RoomUpdate(name=" "),
         lambda: RoomJoin(display_name=" "),

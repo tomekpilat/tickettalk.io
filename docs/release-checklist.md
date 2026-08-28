@@ -22,6 +22,8 @@ Configure GitHub branch protection for `main` to require all four CI jobs and an
 - [x] Layouts include tablet and phone breakpoints down to the supported 320 px viewport.
 - [x] Motion is suppressed when the browser requests reduced motion.
 - [x] Instrument Sans and JetBrains Mono are bundled into the production build instead of depending on locally installed fonts.
+- [x] Creating and joining rooms requires only a display name; no email, password, or registration screen is present.
+- [x] Room discovery requires the complete random UUID URL, while membership and facilitator permissions continue to protect room operations.
 
 ## Production operator sign-off
 

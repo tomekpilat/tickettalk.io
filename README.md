@@ -8,7 +8,7 @@ Planning poker for pricing product stories in focused team sessions.
 - FastAPI + Pydantic
 - Supabase Postgres, Auth, Realtime, and row-level security
 
-In development, the app can run without Supabase credentials by using a fixed local facilitator and an in-memory repository. Production refuses to start without Supabase credentials and never enables the development identity.
+Tickettalks requires no registration, email, or password. In production, each browser receives a persistent anonymous Supabase identity. A room's random UUID URL is its private capability link, while the creating browser retains the facilitator role. In development, the app can run without Supabase credentials by using a fixed anonymous facilitator and an in-memory repository. Production refuses to start without Supabase credentials and never enables the development identity.
 
 ## Run locally
 
@@ -38,17 +38,19 @@ supabase db reset
 supabase test db
 ```
 
-Copy the local API URL, anon key, and service-role key printed by `supabase status` into `.env`, then restart both apps. The browser uses passwordless email sign-in; room members can use Supabase anonymous Auth in the member-join flow.
+Copy the local API URL, anon key, and service-role key printed by `supabase status` into `.env`, then restart both apps. Enable anonymous Auth. The browser creates an anonymous session automatically; users provide only a display name when creating or joining a room.
 
 The initial migration creates profiles, rooms, memberships, tickets, and votes; enables RLS and Realtime; and adds the `create_room_with_facilitator` transaction used by FastAPI. The pgTAP suite in `supabase/tests/rls.sql` checks cross-room isolation and hidden votes.
 
 ## Room workflow
 
-1. Sign in as a facilitator (or use the development identity).
-2. Create a room with a name, estimation scale, and reveal mode.
-3. Share the canonical `/rooms/<uuid>` URL.
-4. A teammate opens that URL, enters a display name, and receives a persistent anonymous membership for that browser.
+1. Enter a display name and create a room with a name, estimation scale, and reveal mode.
+2. Tickettalks generates a random UUID and canonical `/rooms/<uuid>` capability URL.
+3. Share that private URL with the intended participants; anyone who has the complete URL can request membership.
+4. A teammate opens the URL, enters a display name, and receives a persistent anonymous membership for that browser.
 5. Open **Room settings** to rename the room. Scale and reveal mode can be changed until tickets are added.
+
+The UUID is intentionally unguessable and is the room's discovery secret; room data is not publicly listed. Keep the URL private. The browser session that created the room remains its facilitator, so clearing that browser's site data removes its facilitator identity. Membership and facilitator permissions still protect all room operations after discovery.
 
 Room clients send a presence heartbeat every 15 seconds. Members are shown as disconnected after 45 seconds without a heartbeat, so abandoned browser sessions do not remain online indefinitely.
 
@@ -77,6 +79,6 @@ npm run build
 
 ## Production configuration
 
-Set `APP_ENV=production` and `VITE_APP_ENV=production`, provide all Supabase values from `.env.example`, and configure the deployed frontend URL in both `FRONTEND_ORIGIN` and the Supabase Auth redirect allow-list. The frontend subscribes to room, membership, ticket, and vote changes through Realtime.
+Set `APP_ENV=production` and `VITE_APP_ENV=production`, provide all Supabase values from `.env.example`, configure the deployed frontend URL in `FRONTEND_ORIGIN`, and enable anonymous sign-ins in Supabase Auth. No email provider or Auth redirect URL is required. The frontend subscribes to room, membership, ticket, and vote changes through Realtime.
 
 The production Compose topology and Coolify setup are documented in [`docs/deployment.md`](docs/deployment.md). Monitoring, incidents, restore drills, log safety, rate limits, and retention are in [`docs/operations.md`](docs/operations.md); production sign-off uses [`docs/release-checklist.md`](docs/release-checklist.md).

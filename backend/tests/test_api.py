@@ -156,7 +156,12 @@ def test_room_creation_is_owned_and_uses_uuid() -> None:
     try:
         response = client.post(
             "/api/rooms",
-            json={"name": "  Sprint   43  ", "scale": "extended", "reveal_mode": "auto"},
+            json={
+                "name": "  Sprint   43  ",
+                "scale": "extended",
+                "reveal_mode": "auto",
+                "display_name": "  Maya   Chen  ",
+            },
         )
         assert response.status_code == 201
         room = response.json()
@@ -164,6 +169,7 @@ def test_room_creation_is_owned_and_uses_uuid() -> None:
         assert room["owner_id"] == str(OWNER.id)
         assert room["name"] == "Sprint 43"
         assert repository.members[UUID(room["id"])][OWNER.id].role == "facilitator"
+        assert repository.members[UUID(room["id"])][OWNER.id].display_name == "Maya Chen"
 
         fetched = client.get(f"/api/rooms/{room['id']}")
         assert fetched.status_code == 200
@@ -218,6 +224,30 @@ def test_room_validation_and_authentication() -> None:
             ).status_code
             == 422
         )
+    finally:
+        clear_overrides()
+
+
+def test_room_can_only_be_discovered_and_joined_with_its_exact_uuid() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room_id = client.post("/api/rooms", json={"name": "Capability room"}).json()["id"]
+    unknown_room_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    try:
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+
+        unavailable = client.post(
+            f"/api/rooms/{unknown_room_id}/join", json={"display_name": "Sam"}
+        )
+        assert unavailable.status_code == 404
+        assert unavailable.json() == {"detail": "Room not found"}
+        assert client.get(f"/api/rooms/{room_id}").status_code == 403
+
+        joined = client.post(
+            f"/api/rooms/{room_id}/join", json={"display_name": "Sam"}
+        )
+        assert joined.status_code == 200
+        assert client.get(f"/api/rooms/{room_id}").status_code == 200
     finally:
         clear_overrides()
 

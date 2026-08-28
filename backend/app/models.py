@@ -85,6 +85,7 @@ class RoomCreate(BaseModel):
     name: str = Field(min_length=3, max_length=120)
     scale: Scale = "fibonacci"
     reveal_mode: RevealMode = "manual"
+    display_name: str | None = Field(default=None, min_length=1, max_length=80)
 
     @field_validator("name")
     @classmethod
@@ -92,6 +93,16 @@ class RoomCreate(BaseModel):
         normalized = " ".join(value.split())
         if len(normalized) < 3:
             raise ValueError("Room name needs at least 3 characters")
+        return normalized
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Enter your name to create a room")
         return normalized
 
 
@@ -117,9 +128,12 @@ class RoomUpdate(BaseModel):
         return self
 
 
-class Room(RoomCreate):
+class Room(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     owner_id: UUID
+    name: str
+    scale: Scale = "fibonacci"
+    reveal_mode: RevealMode = "manual"
     active_ticket_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

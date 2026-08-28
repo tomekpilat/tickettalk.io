@@ -86,14 +86,14 @@ def get_current_principal(
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sign in to continue",
+            detail="A private browser session is required",
             headers={"WWW-Authenticate": "Bearer"},
         )
     principal = authenticator.authenticate(credentials.credentials)
     if not principal:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session is invalid or expired",
+            detail="Browser session is invalid or expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return principal

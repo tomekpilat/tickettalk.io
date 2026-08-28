@@ -18,22 +18,36 @@ vi.mock('./supabase.js', () => ({
 import {
   DEVELOPMENT_TOKEN,
   getAccessToken,
-  sendMagicLink,
-  signInAsMember,
-  signOut,
+  setAnonymousDisplayName,
   useAuth,
 } from './auth.js'
 
+function anonymousSession(displayName = 'Guest') {
+  return {
+    access_token: 'anonymous-token',
+    user: {
+      id: 'anonymous-user',
+      email: null,
+      is_anonymous: true,
+      user_metadata: { display_name: displayName },
+    },
+  }
+}
+
 function authClient() {
+  const session = anonymousSession()
   return {
     auth: {
       getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
       onAuthStateChange: vi.fn().mockReturnValue({
         data: { subscription: { unsubscribe: vi.fn() } },
       }),
-      signInWithOtp: vi.fn().mockResolvedValue({ error: null }),
-      signInAnonymously: vi.fn().mockResolvedValue({ data: { user: { id: 'member' } }, error: null }),
-      signOut: vi.fn().mockResolvedValue({}),
+      signInAnonymously: vi.fn().mockResolvedValue({
+        data: { session, user: session.user }, error: null,
+      }),
+      updateUser: vi.fn().mockResolvedValue({
+        data: { user: anonymousSession('Maya').user }, error: null,
+      }),
     },
   }
 }
@@ -45,14 +59,17 @@ beforeEach(() => {
   authState.supabase = null
 })
 
-describe('authentication helpers', () => {
-  it('uses the explicit development identity when Supabase is absent', async () => {
+describe('registration-free authentication', () => {
+  it('uses an anonymous development identity when Supabase is absent', async () => {
     const { result } = renderHook(() => useAuth())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.user).toEqual(expect.objectContaining({
-      displayName: 'Tomasz Pilat', isDevelopment: true,
+      displayName: 'Facilitator', isAnonymous: true, isDevelopment: true,
     }))
     await expect(getAccessToken()).resolves.toBe(DEVELOPMENT_TOKEN)
+    await expect(setAnonymousDisplayName('Maya')).resolves.toEqual(
+      expect.objectContaining({ displayName: 'Maya', isAnonymous: true }),
+    )
   })
 
   it('reports production configuration errors without creating a session', async () => {
@@ -66,60 +83,81 @@ describe('authentication helpers', () => {
     await expect(getAccessToken()).resolves.toBeNull()
   })
 
-  it('maps sessions, reacts to auth changes, and unsubscribes', async () => {
+  it('provisions a persistent anonymous identity without registration', async () => {
     const client = authClient()
-    const session = {
-      access_token: 'session-token',
-      user: {
-        id: 'user-1', email: 'maya@example.com', is_anonymous: false,
-        user_metadata: { full_name: 'Maya Chen' },
-      },
-    }
+    authState.isSupabaseConfigured = true
+    authState.supabase = client
+
+    const { result } = renderHook(() => useAuth())
+    await waitFor(() => expect(result.current.user?.displayName).toBe('Guest'))
+
+    expect(client.auth.signInAnonymously).toHaveBeenCalledWith({
+      options: { data: { display_name: 'Guest' } },
+    })
+    expect(result.current.user).toEqual(expect.objectContaining({
+      id: 'anonymous-user', isAnonymous: true,
+    }))
+  })
+
+  it('restores sessions, reacts to auth changes, and unsubscribes', async () => {
+    const client = authClient()
+    const session = anonymousSession('Maya Chen')
     client.auth.getSession.mockResolvedValue({ data: { session }, error: null })
     authState.isSupabaseConfigured = true
     authState.supabase = client
 
     const { result, unmount } = renderHook(() => useAuth())
     await waitFor(() => expect(result.current.user?.displayName).toBe('Maya Chen'))
-    await expect(getAccessToken()).resolves.toBe('session-token')
+    expect(client.auth.signInAnonymously).not.toHaveBeenCalled()
+    await expect(getAccessToken()).resolves.toBe('anonymous-token')
 
     const callback = client.auth.onAuthStateChange.mock.calls[0][0]
-    act(() => callback('SIGNED_OUT', null))
-    expect(result.current.user).toBeNull()
+    act(() => callback('USER_UPDATED', anonymousSession('Renamed')))
+    expect(result.current.user?.displayName).toBe('Renamed')
     unmount()
     expect(client.auth.onAuthStateChange.mock.results[0].value.data.subscription.unsubscribe)
       .toHaveBeenCalled()
   })
 
-  it('sends facilitator links and creates anonymous member sessions', async () => {
+  it('sets a display name on an existing or new anonymous identity', async () => {
     const client = authClient()
     authState.isSupabaseConfigured = true
     authState.supabase = client
 
-    await sendMagicLink('maya@example.com')
-    expect(client.auth.signInWithOtp).toHaveBeenCalledWith({
-      email: 'maya@example.com',
-      options: {
-        emailRedirectTo: window.location.href,
-        data: { display_name: 'maya' },
-      },
+    client.auth.getSession.mockResolvedValueOnce({
+      data: { session: anonymousSession() }, error: null,
     })
-    await expect(signInAsMember('Maya')).resolves.toEqual({ id: 'member' })
-    await signOut()
-    expect(client.auth.signOut).toHaveBeenCalled()
+    await expect(setAnonymousDisplayName('Maya')).resolves.toEqual(
+      expect.objectContaining({ id: 'anonymous-user' }),
+    )
+    expect(client.auth.updateUser).toHaveBeenCalledWith({
+      data: { display_name: 'Maya' },
+    })
+
+    client.auth.getSession.mockResolvedValueOnce({ data: { session: null }, error: null })
+    await setAnonymousDisplayName('Sam')
+    expect(client.auth.signInAnonymously).toHaveBeenCalledWith({
+      options: { data: { display_name: 'Sam' } },
+    })
   })
 
-  it('surfaces provider errors and rejects calls without Supabase', async () => {
-    await expect(sendMagicLink('maya@example.com')).rejects.toThrow('not configured')
-    await expect(signInAsMember('Maya')).rejects.toThrow('not configured')
-    await expect(signOut()).resolves.toBeUndefined()
-
+  it('surfaces anonymous identity provider errors', async () => {
     const client = authClient()
     const providerError = new Error('Provider unavailable')
-    client.auth.signInWithOtp.mockResolvedValue({ error: providerError })
-    client.auth.signInAnonymously.mockResolvedValue({ data: {}, error: providerError })
+    authState.isSupabaseConfigured = true
     authState.supabase = client
-    await expect(sendMagicLink('maya@example.com')).rejects.toThrow(providerError)
-    await expect(signInAsMember('Maya')).rejects.toThrow(providerError)
+
+    client.auth.getSession.mockResolvedValueOnce({ data: {}, error: providerError })
+    await expect(setAnonymousDisplayName('Maya')).rejects.toThrow(providerError)
+
+    client.auth.getSession.mockResolvedValueOnce({ data: { session: null }, error: null })
+    client.auth.signInAnonymously.mockResolvedValueOnce({ data: {}, error: providerError })
+    await expect(setAnonymousDisplayName('Maya')).rejects.toThrow(providerError)
+
+    client.auth.getSession.mockResolvedValueOnce({
+      data: { session: anonymousSession() }, error: null,
+    })
+    client.auth.updateUser.mockResolvedValueOnce({ data: {}, error: providerError })
+    await expect(setAnonymousDisplayName('Maya')).rejects.toThrow(providerError)
   })
 })

@@ -37,9 +37,7 @@ const apiMock = vi.hoisted(() => ({
 
 const authMock = vi.hoisted(() => ({
   useAuth: vi.fn(),
-  sendMagicLink: vi.fn(),
-  signInAsMember: vi.fn(),
-  signOut: vi.fn(),
+  setAnonymousDisplayName: vi.fn(),
 }))
 
 const realtimeMock = vi.hoisted(() => ({ callback: null }))
@@ -47,9 +45,7 @@ const realtimeMock = vi.hoisted(() => ({ callback: null }))
 vi.mock('./lib/api.js', () => ({ api: apiMock }))
 vi.mock('./lib/auth.js', () => ({
   useAuth: authMock.useAuth,
-  sendMagicLink: authMock.sendMagicLink,
-  signInAsMember: authMock.signInAsMember,
-  signOut: authMock.signOut,
+  setAnonymousDisplayName: authMock.setAnonymousDisplayName,
 }))
 vi.mock('./lib/supabase.js', () => ({
   subscribeToRoom: (_roomId, callback) => {
@@ -62,6 +58,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   realtimeMock.callback = null
   authMock.useAuth.mockReturnValue({ user, loading: false })
+  authMock.setAnonymousDisplayName.mockResolvedValue(user)
   apiMock.members.mockResolvedValue([])
   apiMock.touchPresence.mockResolvedValue({})
   apiMock.previewImport.mockResolvedValue({
@@ -89,22 +86,15 @@ describe('session entry states', () => {
     expect(apiMock.rooms).not.toHaveBeenCalled()
   })
 
-  it('sends a facilitator sign-in link and surfaces provider errors', async () => {
+  it('does not offer registration when an anonymous identity cannot be provisioned', () => {
     window.history.replaceState({}, '', '/')
     authMock.useAuth.mockReturnValue({ user: null, loading: false })
-    authMock.sendMagicLink.mockResolvedValueOnce(undefined)
     render(<App />)
 
-    fireEvent.change(screen.getByLabelText('Work email'), {
-      target: { value: 'maya@example.com' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: /Email me a sign-in link/ }))
-    expect(await screen.findByText('Check your email for the sign-in link.')).toBeVisible()
-    expect(authMock.sendMagicLink).toHaveBeenCalledWith('maya@example.com')
-
-    authMock.sendMagicLink.mockRejectedValueOnce(new Error('Email unavailable'))
-    fireEvent.click(screen.getByRole('button', { name: /Email me a sign-in link/ }))
-    expect(await screen.findByText('Email unavailable')).toBeVisible()
+    expect(screen.getByRole('heading', {
+      name: 'A private browser session could not be created.',
+    })).toBeVisible()
+    expect(screen.queryByLabelText('Work email')).not.toBeInTheDocument()
   })
 
   it('rejects malformed room paths without leaking room data', () => {
@@ -139,6 +129,9 @@ describe('room creation', () => {
     render(<App />)
 
     expect(await screen.findByRole('heading', { name: 'Pricing rooms' })).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Your name'), {
+      target: { value: '  Maya   Chen  ' },
+    })
     const name = screen.getByLabelText('Room name')
     fireEvent.change(name, { target: { value: 'Sprint 44' } })
     fireEvent.click(screen.getByRole('button', { name: /Extended/ }))
@@ -150,17 +143,31 @@ describe('room creation', () => {
       name: 'Sprint 44',
       scale: 'extended',
       reveal_mode: 'auto',
+      display_name: 'Maya Chen',
     })
+    expect(authMock.setAnonymousDisplayName).toHaveBeenCalledWith('Maya Chen')
     expect(window.location.pathname).toBe(`/rooms/${roomId}`)
   })
 
   it('shows local validation before calling the API', async () => {
     render(<App />)
     await screen.findByRole('heading', { name: 'Pricing rooms' })
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Maya' } })
     fireEvent.change(screen.getByLabelText('Room name'), { target: { value: 'x' } })
     fireEvent.click(screen.getByRole('button', { name: /Create pricing room/ }))
 
     expect(screen.getByText('Room name needs at least 3 characters.')).toBeVisible()
+    expect(apiMock.createRoom).not.toHaveBeenCalled()
+  })
+
+  it('requires only a display name before creating a protected room', async () => {
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Pricing rooms' })
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: /Create pricing room/ }))
+
+    expect(screen.getByText('Enter your name to create a room.')).toBeVisible()
+    expect(screen.queryByLabelText('Work email')).not.toBeInTheDocument()
     expect(apiMock.createRoom).not.toHaveBeenCalled()
   })
 })
@@ -233,7 +240,7 @@ describe('anonymous room join', () => {
   it('creates an anonymous identity and joins with only a display name', async () => {
     window.history.replaceState({}, '', `/rooms/${roomId}`)
     authMock.useAuth.mockReturnValue({ user: null, loading: false })
-    authMock.signInAsMember.mockResolvedValue({ id: 'anonymous-user' })
+    authMock.setAnonymousDisplayName.mockResolvedValue({ id: 'anonymous-user' })
     apiMock.joinRoom.mockResolvedValue({
       room_id: roomId,
       user_id: 'anonymous-user',
@@ -248,7 +255,7 @@ describe('anonymous room join', () => {
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '  Maya   Chen  ' } })
     fireEvent.click(screen.getByRole('button', { name: /Join room/ }))
 
-    await waitFor(() => expect(authMock.signInAsMember).toHaveBeenCalledWith('Maya Chen'))
+    await waitFor(() => expect(authMock.setAnonymousDisplayName).toHaveBeenCalledWith('Maya Chen'))
     expect(apiMock.joinRoom).toHaveBeenCalledWith(roomId, 'Maya Chen')
     expect(await screen.findByRole('heading', { name: 'You’re in.' })).toBeVisible()
   })
@@ -287,7 +294,7 @@ describe('anonymous room join', () => {
 
     expect(await screen.findByRole('heading', { name: 'You’re in.' })).toBeVisible()
     expect(screen.getByText('Maya Chen (you)')).toBeVisible()
-    expect(authMock.signInAsMember).not.toHaveBeenCalled()
+    expect(authMock.setAnonymousDisplayName).not.toHaveBeenCalled()
     expect(apiMock.joinRoom).not.toHaveBeenCalled()
   })
 })
