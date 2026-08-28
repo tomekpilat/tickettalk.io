@@ -52,6 +52,8 @@ The initial migration creates profiles, rooms, memberships, tickets, and votes; 
 
 Room clients send a presence heartbeat every 15 seconds. Members are shown as disconnected after 45 seconds without a heartbeat, so abandoned browser sessions do not remain online indefinitely.
 
+Jira imports accept CSV, TSV, pasted text, quoted commas, and multiline descriptions. Imports are limited to 1 MB and 500 tickets, validated by the API before saving, and require an explicit skip-or-replace choice for Jira keys already in the room. Facilitators can also add tickets without a Jira key and edit, reorder, or remove every backlog item; members retain read-only access.
+
 FastAPI validates the Supabase JWT and always scopes reads and writes to the authenticated actor. Creating a room and its owner membership is atomic.
 
 ## Verification

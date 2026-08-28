@@ -69,6 +69,8 @@ button:disabled { opacity:.42; cursor:not-allowed; }
 .import-grid { display:grid;grid-template-columns:1fr 1fr;gap:28px; }
 .import-editor,.preview { padding:24px; }
 .import-editor textarea { width:100%;height:290px;resize:vertical;border:0;background:var(--paper);padding:16px;margin:22px 0 14px;font:400 12px/1.8 'JetBrains Mono'; }
+.duplicate-choice { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:14px; color:var(--muted); font:500 9px 'JetBrains Mono'; text-transform:uppercase; letter-spacing:.1em; }
+.duplicate-choice select { border:1px solid var(--line); background:var(--white); padding:8px 10px; font:500 11px 'Instrument Sans'; text-transform:none; letter-spacing:0; }
 .editor-actions { display:flex;align-items:center;gap:14px;color:var(--muted);font-size:11px; }
 .file-picker { cursor:pointer; }
 .file-picker input { display:none; }
@@ -77,6 +79,13 @@ button:disabled { opacity:.42; cursor:not-allowed; }
 .preview-row span { font:500 10px 'JetBrains Mono';color:var(--green); }
 .preview-row p { margin:0;font-size:13px; }
 .preview .primary { margin-top:22px; }
+.preview-message { margin:28px 0; color:var(--muted); font-size:12px; }
+.import-error { display:flex; flex-direction:column; gap:5px; margin-top:12px; padding:12px; border-left:2px solid #b4442a; background:#fbf2eb; }
+.import-error strong { font:500 9px 'JetBrains Mono'; color:#963a26; text-transform:uppercase; letter-spacing:.08em; }
+.import-error span { font-size:12px; }
+.import-error small { color:var(--muted); font-size:11px; line-height:1.4; }
+.preview-counts { display:flex; justify-content:space-between; margin-top:18px; font:400 9px 'JetBrains Mono'; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+.manual-entry { display:flex; justify-content:flex-end; align-items:center; gap:16px; margin-top:22px; color:var(--muted); font-size:12px; }
 .ticket-table { overflow:hidden; }
 .ticket-row { width:100%;display:grid;grid-template-columns:100px 1fr 90px 70px;gap:16px;align-items:center;border:0;border-bottom:1px solid #eee7d9;background:transparent;padding:17px 22px;text-align:left; }
 button.ticket-row:hover { background:#faf6ed; }
@@ -86,6 +95,14 @@ button.ticket-row:hover { background:#faf6ed; }
 .ticket-row>b { text-align:right;font:500 16px 'JetBrains Mono'; }
 .ticket-head { padding-block:12px;background:#f9f5ec; }
 .ticket-head span { color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.14em; }
+.backlog-row { display:flex; align-items:stretch; border-bottom:1px solid #eee7d9; }
+.backlog-row:last-child { border-bottom:0; }
+.backlog-row .ticket-row { flex:1; border-bottom:0; }
+.ticket-actions { display:flex; align-items:center; gap:4px; padding:0 12px 0 4px; }
+.ticket-actions button { border:0; background:transparent; padding:7px; color:var(--muted); font-size:10px; }
+.ticket-actions button:hover { color:var(--green); }
+.ticket-actions .danger-text:hover { color:#b4442a; }
+.heading-actions { display:flex; align-items:center; gap:8px; }
 .empty-points { color:#b4ab99; }
 .summary-stats { display:flex;gap:74px;margin:-10px 0 42px; }
 .summary-stats div { display:flex;flex-direction:column;gap:6px; }
@@ -127,6 +144,8 @@ button.ticket-row:hover { background:#faf6ed; }
 .settings-panel { width:min(460px,100%); padding:28px; display:flex; flex-direction:column; gap:20px; }
 .settings-panel .panel-label button { border:0; background:transparent; color:var(--muted); font-size:20px; }
 .settings-panel select:disabled { opacity:.55; }
+.ticket-editor textarea { width:100%; min-height:120px; resize:vertical; border:1px solid var(--line); background:var(--paper); padding:11px 12px; font:400 14px/1.5 'Instrument Sans'; }
+.ticket-editor label>small { margin-left:4px; color:#aaa18f; }
 .settings-note { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
 .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
 .toast { position:fixed; z-index:30; left:50%; bottom:26px; transform:translateX(-50%); background:var(--ink); color:var(--white); padding:11px 16px; font-size:12px; box-shadow:none; }

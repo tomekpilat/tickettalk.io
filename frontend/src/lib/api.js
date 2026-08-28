@@ -21,8 +21,12 @@ async function request(path, options) {
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}))
-    throw new ApiError(payload.detail || `Request failed with ${response.status}`, response.status)
+    const detail = Array.isArray(payload.detail)
+      ? payload.detail.map((item) => item.message || item.msg || String(item)).join(' ')
+      : payload.detail
+    throw new ApiError(detail || `Request failed with ${response.status}`, response.status)
   }
+  if (response.status === 204) return null
   return response.json()
 }
 
@@ -40,8 +44,23 @@ export const api = {
     method: 'PATCH', body: JSON.stringify(room),
   }),
   tickets: (roomId) => request(`/api/rooms/${roomId}/tickets`),
-  importTickets: (roomId, tickets) => request(`/api/rooms/${roomId}/tickets/import`, {
-    method: 'POST', body: JSON.stringify({ tickets }),
+  previewImport: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import/preview`, {
+    method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),
+  }),
+  importTickets: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import`, {
+    method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),
+  }),
+  createTicket: (roomId, ticket) => request(`/api/rooms/${roomId}/tickets`, {
+    method: 'POST', body: JSON.stringify(ticket),
+  }),
+  updateTicket: (roomId, ticketId, ticket) => request(`/api/rooms/${roomId}/tickets/${ticketId}`, {
+    method: 'PATCH', body: JSON.stringify(ticket),
+  }),
+  deleteTicket: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}`, {
+    method: 'DELETE',
+  }),
+  reorderTickets: (roomId, ticketIds) => request(`/api/rooms/${roomId}/tickets/order`, {
+    method: 'PUT', body: JSON.stringify({ ticket_ids: ticketIds }),
   }),
   estimate: (ticketId, storyPoints) => request(`/api/tickets/${ticketId}/estimate`, {
     method: 'PATCH', body: JSON.stringify({ story_points: storyPoints }),

@@ -3,10 +3,22 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
 from .auth import DEVELOPMENT_USER_ID, Principal
-from .models import Room, RoomCreate, RoomJoin, RoomMember, RoomUpdate, Ticket, TicketCreate
+from .models import (
+    JiraImportRow,
+    Room,
+    RoomCreate,
+    RoomJoin,
+    RoomMember,
+    RoomUpdate,
+    Ticket,
+    TicketCreate,
+    TicketImportResult,
+    TicketUpdate,
+)
 
 PRESENCE_WINDOW = timedelta(seconds=45)
 
@@ -23,6 +35,10 @@ class ForbiddenError(RepositoryError):
     pass
 
 
+class ConflictError(RepositoryError):
+    pass
+
+
 class Repository(Protocol):
     def list_rooms(self, actor: Principal) -> list[Room]: ...
     def get_room(self, room_id: UUID, actor: Principal) -> Room: ...
@@ -34,9 +50,19 @@ class Repository(Protocol):
     def list_members(self, room_id: UUID, actor: Principal) -> list[RoomMember]: ...
     def touch_presence(self, room_id: UUID, actor: Principal) -> RoomMember: ...
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]: ...
-    def import_tickets(
-        self, room_id: UUID, payload: list[TicketCreate], actor: Principal
+    def create_ticket(
+        self, room_id: UUID, payload: TicketCreate, actor: Principal
+    ) -> Ticket: ...
+    def update_ticket(
+        self, room_id: UUID, ticket_id: UUID, payload: TicketUpdate, actor: Principal
+    ) -> Ticket: ...
+    def delete_ticket(self, room_id: UUID, ticket_id: UUID, actor: Principal) -> None: ...
+    def reorder_tickets(
+        self, room_id: UUID, ticket_ids: list[UUID], actor: Principal
     ) -> list[Ticket]: ...
+    def import_tickets(
+        self, room_id: UUID, rows: list[JiraImportRow], actor: Principal
+    ) -> TicketImportResult: ...
     def update_estimate(
         self, ticket_id: UUID, points: float | None, actor: Principal
     ) -> Ticket | None: ...
@@ -202,22 +228,121 @@ class InMemoryRepository:
             key=lambda item: item.position,
         )
 
-    def import_tickets(
-        self, room_id: UUID, payload: list[TicketCreate], actor: Principal
-    ) -> list[Ticket]:
-        room = self._require_owner(room_id, actor)
-        existing_count = len(
-            [ticket for ticket in self.tickets.values() if ticket.room_id == room_id]
-        )
-        created = [
-            Ticket(room_id=room_id, position=existing_count + index, **item.model_dump())
-            for index, item in enumerate(payload)
-        ]
-        for ticket in created:
-            self.tickets[ticket.id] = ticket
-        room.ticket_count = existing_count + len(created)
+    def _assert_key_unique(
+        self, room_id: UUID, issue_key: str | None, exclude_id: UUID | None = None
+    ) -> None:
+        if not issue_key:
+            return
+        if any(
+            ticket.room_id == room_id
+            and ticket.id != exclude_id
+            and ticket.issue_key
+            and ticket.issue_key.casefold() == issue_key.casefold()
+            for ticket in self.tickets.values()
+        ):
+            raise ConflictError(f"{issue_key} already exists in this room")
+
+    def _refresh_room_stats(self, room: Room) -> None:
+        room_tickets = [item for item in self.tickets.values() if item.room_id == room.id]
+        room.ticket_count = len(room_tickets)
+        room.sized_count = sum(item.story_points is not None for item in room_tickets)
+        room.total_points = sum(item.story_points or 0 for item in room_tickets)
         room.updated_at = datetime.now(UTC)
-        return deepcopy(created)
+
+    def create_ticket(
+        self, room_id: UUID, payload: TicketCreate, actor: Principal
+    ) -> Ticket:
+        room = self._require_owner(room_id, actor)
+        self._assert_key_unique(room_id, payload.issue_key)
+        positions = [item.position for item in self.tickets.values() if item.room_id == room_id]
+        ticket = Ticket(
+            room_id=room_id,
+            position=(max(positions) + 1 if positions else 0),
+            **payload.model_dump(),
+        )
+        self.tickets[ticket.id] = ticket
+        self._refresh_room_stats(room)
+        return deepcopy(ticket)
+
+    def update_ticket(
+        self, room_id: UUID, ticket_id: UUID, payload: TicketUpdate, actor: Principal
+    ) -> Ticket:
+        room = self._require_owner(room_id, actor)
+        ticket = self.tickets.get(ticket_id)
+        if not ticket or ticket.room_id != room_id:
+            raise NotFoundError("Ticket not found")
+        if "issue_key" in payload.model_fields_set:
+            self._assert_key_unique(room_id, payload.issue_key, ticket.id)
+        for field, value in payload.model_dump(exclude_unset=True).items():
+            setattr(ticket, field, value)
+        self._refresh_room_stats(room)
+        return deepcopy(ticket)
+
+    def delete_ticket(self, room_id: UUID, ticket_id: UUID, actor: Principal) -> None:
+        room = self._require_owner(room_id, actor)
+        ticket = self.tickets.get(ticket_id)
+        if not ticket or ticket.room_id != room_id:
+            raise NotFoundError("Ticket not found")
+        del self.tickets[ticket_id]
+        remaining = sorted(
+            [item for item in self.tickets.values() if item.room_id == room_id],
+            key=lambda item: item.position,
+        )
+        for position, item in enumerate(remaining):
+            item.position = position
+        self._refresh_room_stats(room)
+
+    def reorder_tickets(
+        self, room_id: UUID, ticket_ids: list[UUID], actor: Principal
+    ) -> list[Ticket]:
+        self._require_owner(room_id, actor)
+        current = [item for item in self.tickets.values() if item.room_id == room_id]
+        if set(ticket_ids) != {item.id for item in current}:
+            raise ConflictError("Ticket order must include every room ticket exactly once")
+        for position, ticket_id in enumerate(ticket_ids):
+            self.tickets[ticket_id].position = position
+        return self.list_tickets(room_id, actor)
+
+    def import_tickets(
+        self, room_id: UUID, rows: list[JiraImportRow], actor: Principal
+    ) -> TicketImportResult:
+        room = self._require_owner(room_id, actor)
+        imported_count = 0
+        replaced_count = 0
+        skipped_count = 0
+        for row in rows:
+            if row.action == "skip":
+                skipped_count += 1
+                continue
+            values = row.model_dump(
+                exclude={"row_number", "action", "existing_ticket_id"}
+            )
+            if row.action == "replace" and row.existing_ticket_id:
+                ticket = self.tickets.get(row.existing_ticket_id)
+                if not ticket or ticket.room_id != room_id:
+                    raise ConflictError("The backlog changed after preview; preview the import again")
+                for field, value in values.items():
+                    setattr(ticket, field, value)
+                replaced_count += 1
+                continue
+            self._assert_key_unique(room_id, row.issue_key)
+            positions = [
+                item.position for item in self.tickets.values() if item.room_id == room_id
+            ]
+            ticket = Ticket(
+                room_id=room_id,
+                position=(max(positions) + 1 if positions else 0),
+                **values,
+            )
+            self.tickets[ticket.id] = ticket
+            imported_count += 1
+        self._refresh_room_stats(room)
+        return TicketImportResult(
+            tickets=self.list_tickets(room_id, actor),
+            imported_count=imported_count,
+            replaced_count=replaced_count,
+            skipped_count=skipped_count,
+        )
 
     def update_estimate(
         self, ticket_id: UUID, points: float | None, actor: Principal
@@ -227,10 +352,7 @@ class InMemoryRepository:
             return None
         room = self._require_owner(ticket.room_id, actor)
         ticket.story_points = points
-        room_tickets = [item for item in self.tickets.values() if item.room_id == room.id]
-        room.sized_count = sum(item.story_points is not None for item in room_tickets)
-        room.total_points = sum(item.story_points or 0 for item in room_tickets)
-        room.updated_at = datetime.now(UTC)
+        self._refresh_room_stats(room)
         return deepcopy(ticket)
 
 
@@ -432,13 +554,20 @@ class SupabaseRepository:
         )
         return [Ticket.model_validate(row) for row in result.data]
 
-    def import_tickets(
-        self, room_id: UUID, payload: list[TicketCreate], actor: Principal
-    ) -> list[Ticket]:
+    def _require_owner_room(self, room_id: UUID, actor: Principal) -> Room:
         room = self.get_room(room_id, actor)
         if room.owner_id != actor.id:
             raise ForbiddenError("Only the facilitator can change the backlog")
-        last_position = (
+        return room
+
+    @staticmethod
+    def _raise_ticket_conflict(error: APIError) -> None:
+        if error.code == "23505":
+            raise ConflictError("That issue key already exists in this room") from error
+        raise error
+
+    def _next_ticket_position(self, room_id: UUID) -> int:
+        result = (
             self.client.table("tickets")
             .select("position")
             .eq("room_id", str(room_id))
@@ -446,18 +575,141 @@ class SupabaseRepository:
             .limit(1)
             .execute()
         )
-        last_row = self._first(last_position.data)
-        start_position = int(last_row["position"]) + 1 if last_row else 0
-        rows = [
-            {
-                **item.model_dump(),
-                "room_id": str(room_id),
-                "position": start_position + index,
-            }
-            for index, item in enumerate(payload)
-        ]
-        result = self.client.table("tickets").insert(rows).execute()
+        row = self._first(result.data)
+        return int(row["position"]) + 1 if row else 0
+
+    def create_ticket(
+        self, room_id: UUID, payload: TicketCreate, actor: Principal
+    ) -> Ticket:
+        self._require_owner_room(room_id, actor)
+        try:
+            result = self.client.table("tickets").insert(
+                {
+                    **payload.model_dump(),
+                    "room_id": str(room_id),
+                    "position": self._next_ticket_position(room_id),
+                }
+            ).execute()
+        except APIError as error:
+            self._raise_ticket_conflict(error)
+        row = self._first(result.data)
+        if not row:
+            raise RepositoryError("Ticket creation returned no data")
+        return Ticket.model_validate(row)
+
+    def update_ticket(
+        self, room_id: UUID, ticket_id: UUID, payload: TicketUpdate, actor: Principal
+    ) -> Ticket:
+        self._require_owner_room(room_id, actor)
+        try:
+            result = (
+                self.client.table("tickets")
+                .update(payload.model_dump(exclude_unset=True))
+                .eq("room_id", str(room_id))
+                .eq("id", str(ticket_id))
+                .execute()
+            )
+        except APIError as error:
+            self._raise_ticket_conflict(error)
+        row = self._first(result.data)
+        if not row:
+            raise NotFoundError("Ticket not found")
+        return Ticket.model_validate(row)
+
+    def delete_ticket(self, room_id: UUID, ticket_id: UUID, actor: Principal) -> None:
+        self._require_owner_room(room_id, actor)
+        result = (
+            self.client.table("tickets")
+            .delete()
+            .eq("room_id", str(room_id))
+            .eq("id", str(ticket_id))
+            .execute()
+        )
+        if not self._first(result.data):
+            raise NotFoundError("Ticket not found")
+        remaining = (
+            self.client.table("tickets")
+            .select("id")
+            .eq("room_id", str(room_id))
+            .order("position")
+            .execute()
+        )
+        if remaining.data:
+            self.client.rpc(
+                "reorder_room_tickets",
+                {
+                    "p_room_id": str(room_id),
+                    "p_ticket_ids": [str(row["id"]) for row in remaining.data],
+                },
+            ).execute()
+
+    def reorder_tickets(
+        self, room_id: UUID, ticket_ids: list[UUID], actor: Principal
+    ) -> list[Ticket]:
+        self._require_owner_room(room_id, actor)
+        try:
+            result = self.client.rpc(
+                "reorder_room_tickets",
+                {
+                    "p_room_id": str(room_id),
+                    "p_ticket_ids": [str(ticket_id) for ticket_id in ticket_ids],
+                },
+            ).execute()
+        except APIError as error:
+            if error.code in {"22023", "23505"}:
+                raise ConflictError(
+                    "Ticket order must include every room ticket exactly once"
+                ) from error
+            raise
         return [Ticket.model_validate(row) for row in result.data]
+
+    def import_tickets(
+        self, room_id: UUID, rows: list[JiraImportRow], actor: Principal
+    ) -> TicketImportResult:
+        self._require_owner_room(room_id, actor)
+        imported_count = 0
+        replaced_count = 0
+        skipped_count = 0
+        next_position = self._next_ticket_position(room_id)
+        try:
+            for row in rows:
+                if row.action == "skip":
+                    skipped_count += 1
+                    continue
+                values = row.model_dump(
+                    exclude={"row_number", "action", "existing_ticket_id"}
+                )
+                if row.action == "replace" and row.existing_ticket_id:
+                    updated = (
+                        self.client.table("tickets")
+                        .update(values)
+                        .eq("room_id", str(room_id))
+                        .eq("id", str(row.existing_ticket_id))
+                        .execute()
+                    )
+                    if not self._first(updated.data):
+                        raise ConflictError(
+                            "The backlog changed after preview; preview the import again"
+                        )
+                    replaced_count += 1
+                    continue
+                self.client.table("tickets").insert(
+                    {
+                        **values,
+                        "room_id": str(room_id),
+                        "position": next_position,
+                    }
+                ).execute()
+                next_position += 1
+                imported_count += 1
+        except APIError as error:
+            self._raise_ticket_conflict(error)
+        return TicketImportResult(
+            tickets=self.list_tickets(room_id, actor),
+            imported_count=imported_count,
+            replaced_count=replaced_count,
+            skipped_count=skipped_count,
+        )
 
     def update_estimate(
         self, ticket_id: UUID, points: float | None, actor: Principal

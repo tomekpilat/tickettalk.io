@@ -193,3 +193,90 @@ def test_presence_heartbeat_recovers_a_disconnected_member() -> None:
         ] is True
     finally:
         clear_overrides()
+
+
+def test_jira_preview_save_and_manual_backlog_persist_in_order() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room_id = client.post("/api/rooms", json={"name": "Backlog room"}).json()["id"]
+    csv_content = (
+        "Issue key,Summary,Issue Type,Description,Story Points\n"
+        'PAY-51,"Checkout, safely",Story,"First line\nSecond line",5\n'
+        "PAY-52,Retry webhook,Bug,Retry failed deliveries,\n"
+    )
+    try:
+        preview = client.post(
+            f"/api/rooms/{room_id}/tickets/import/preview",
+            json={"content": csv_content, "duplicate_behavior": "error"},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["source_count"] == 2
+        assert preview.json()["saved_count"] == 2
+        assert preview.json()["errors"] == []
+
+        saved = client.post(
+            f"/api/rooms/{room_id}/tickets/import",
+            json={"content": csv_content, "duplicate_behavior": "error"},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["imported_count"] == preview.json()["saved_count"]
+        assert [ticket["issue_key"] for ticket in saved.json()["tickets"]] == [
+            "PAY-51",
+            "PAY-52",
+        ]
+        assert saved.json()["tickets"][0]["description"] == "First line\nSecond line"
+
+        manual = client.post(
+            f"/api/rooms/{room_id}/tickets",
+            json={
+                "summary": "Untracked product question",
+                "issue_type": "Discussion",
+                "description": "Decide the smallest useful scope.",
+            },
+        )
+        assert manual.status_code == 201
+        assert manual.json()["issue_key"] is None
+
+        edited = client.patch(
+            f"/api/rooms/{room_id}/tickets/{manual.json()['id']}",
+            json={"summary": "Clarify product question", "issue_key": "TT-LOCAL"},
+        )
+        assert edited.status_code == 200
+
+        current = client.get(f"/api/rooms/{room_id}/tickets").json()
+        reverse_order = [ticket["id"] for ticket in reversed(current)]
+        reordered = client.put(
+            f"/api/rooms/{room_id}/tickets/order", json={"ticket_ids": reverse_order}
+        )
+        assert [ticket["id"] for ticket in reordered.json()] == reverse_order
+
+        removed_id = reordered.json()[1]["id"]
+        assert client.delete(
+            f"/api/rooms/{room_id}/tickets/{removed_id}"
+        ).status_code == 204
+        refreshed = client.get(f"/api/rooms/{room_id}/tickets").json()
+        assert [ticket["position"] for ticket in refreshed] == [0, 1]
+        assert [ticket["id"] for ticket in refreshed] == [
+            reverse_order[0],
+            reverse_order[2],
+        ]
+    finally:
+        clear_overrides()
+
+
+def test_members_cannot_preview_or_mutate_the_backlog() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    room_id = client.post("/api/rooms", json={"name": "Protected backlog"}).json()["id"]
+    try:
+        app.dependency_overrides[get_current_principal] = lambda: MEMBER_A
+        client.post(f"/api/rooms/{room_id}/join", json={"display_name": "Sam"})
+        payload = {"content": "Summary\nPrivate import\n", "duplicate_behavior": "error"}
+        assert client.post(
+            f"/api/rooms/{room_id}/tickets/import/preview", json=payload
+        ).status_code == 403
+        assert client.post(
+            f"/api/rooms/{room_id}/tickets", json={"summary": "Unauthorized"}
+        ).status_code == 403
+    finally:
+        clear_overrides()

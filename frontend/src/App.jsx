@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { sendMagicLink, signInAsMember, signOut, useAuth } from './lib/auth.js'
 import { api } from './lib/api.js'
 import { isRoomLikePath, pushPath, roomIdFromPath, roomPath } from './lib/routing.js'
@@ -24,6 +24,7 @@ const team = [
 ]
 
 const sampleImport = 'Issue key,Summary,Issue Type\nPAY-201,Add wallet balance alert,Story\nPAY-205,Fix duplicate webhook delivery,Bug'
+const emptyTicketDraft = { issue_key: '', summary: '', issue_type: 'Story', description: '' }
 
 function Logo() {
   return <div className="logo"><span>ticket<strong>talks.</strong></span></div>
@@ -66,6 +67,12 @@ function Workspace({ user }) {
   const [roomScale, setRoomScale] = useState('fibonacci')
   const [revealMode, setRevealMode] = useState('manual')
   const [importText, setImportText] = useState(sampleImport)
+  const [duplicateBehavior, setDuplicateBehavior] = useState('error')
+  const [importPreview, setImportPreview] = useState(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [ticketDraft, setTicketDraft] = useState(null)
+  const [editingTicketId, setEditingTicketId] = useState(null)
   const [apiOnline, setApiOnline] = useState(false)
   const [loading, setLoading] = useState(true)
   const [formError, setFormError] = useState('')
@@ -193,14 +200,31 @@ function Workspace({ user }) {
   const votingScale = scales[room?.scale] || scales.fibonacci
   const isFacilitator = Boolean(room && room.owner_id === user.id)
 
-  const parsedTickets = useMemo(() => {
-    const rows = importText.trim().split('\n').filter(Boolean)
-    const hasHeader = rows[0]?.toLowerCase().includes('summary')
-    return rows.slice(hasHeader ? 1 : 0).map((row, index) => {
-      const [key, summary, type] = row.split(',').map((part) => part?.trim())
-      return { id: `new-${index}`, issue_key: key || `TT-${index + 1}`, summary: summary || key, issue_type: type || 'Story', description: '', story_points: null }
-    })
-  }, [importText])
+  useEffect(() => {
+    if (!room?.id || view !== 'import' || !isFacilitator || !importText.trim()) {
+      setImportPreview(null)
+      return undefined
+    }
+    let cancelled = false
+    setPreviewing(true)
+    const timeout = window.setTimeout(async () => {
+      try {
+        const preview = await api.previewImport(room.id, importText, duplicateBehavior)
+        if (!cancelled) setImportPreview(preview)
+      } catch (error) {
+        if (!cancelled) {
+          setImportPreview(null)
+          setFormError(error.message)
+        }
+      } finally {
+        if (!cancelled) setPreviewing(false)
+      }
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+    }
+  }, [duplicateBehavior, importText, isFacilitator, room?.id, view])
 
   const createRoom = async () => {
     setFormError('')
@@ -228,18 +252,108 @@ function Workspace({ user }) {
     }
   }
 
-  const startImportedSession = async () => {
-    if (!parsedTickets.length || !room) return
+  const saveImport = async () => {
+    if (!importPreview?.saved_count || importPreview.errors.length || !room) return
+    setImporting(true)
+    setFormError('')
     try {
-      const nextTickets = await api.importTickets(room.id, parsedTickets)
-      setTickets(nextTickets)
-      setRoom((currentRoom) => ({ ...currentRoom, ticket_count: nextTickets.length }))
-      setTicketIndex(0)
-      setSelectedVote(null)
-      setRevealed(false)
-      setView('session')
+      const result = await api.importTickets(room.id, importText, duplicateBehavior)
+      setTickets(result.tickets)
+      setRoom((currentRoom) => ({ ...currentRoom, ticket_count: result.tickets.length }))
+      setToast(`${result.imported_count + result.replaced_count} tickets saved`)
+      setView('backlog')
     } catch (error) {
       setFormError(error.message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const loadImportFile = (file) => {
+    if (!file) return
+    if (file.size > 1_000_000) {
+      setFormError('The import is larger than 1 MB. Split it into smaller files.')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setFormError('')
+      setImportText(String(reader.result || ''))
+    }
+    reader.readAsText(file)
+  }
+
+  const openNewTicket = () => {
+    setEditingTicketId(null)
+    setTicketDraft({ ...emptyTicketDraft })
+    setFormError('')
+  }
+
+  const openTicketEditor = (ticket) => {
+    setEditingTicketId(ticket.id)
+    setTicketDraft({
+      issue_key: ticket.issue_key || '',
+      summary: ticket.summary,
+      issue_type: ticket.issue_type,
+      description: ticket.description || '',
+    })
+    setFormError('')
+  }
+
+  const saveTicketDraft = async () => {
+    if (!ticketDraft?.summary.trim()) {
+      setFormError('Ticket summary is required.')
+      return
+    }
+    const payload = {
+      ...ticketDraft,
+      issue_key: ticketDraft.issue_key.trim() || null,
+    }
+    try {
+      if (editingTicketId) {
+        const updated = await api.updateTicket(room.id, editingTicketId, payload)
+        setTickets((items) => items.map((item) => item.id === updated.id ? updated : item))
+        setToast('Ticket updated')
+      } else {
+        const created = await api.createTicket(room.id, payload)
+        setTickets((items) => [...items, created])
+        setRoom((currentRoom) => ({ ...currentRoom, ticket_count: currentRoom.ticket_count + 1 }))
+        setView('backlog')
+        setToast('Ticket added')
+      }
+      setTicketDraft(null)
+      setEditingTicketId(null)
+    } catch (error) {
+      setFormError(error.message)
+    }
+  }
+
+  const deleteBacklogTicket = async (ticket) => {
+    if (!window.confirm(`Remove ${ticket.issue_key || ticket.summary} from this room?`)) return
+    try {
+      await api.deleteTicket(room.id, ticket.id)
+      const remaining = tickets.filter((item) => item.id !== ticket.id)
+        .map((item, position) => ({ ...item, position }))
+      setTickets(remaining)
+      setRoom((currentRoom) => ({ ...currentRoom, ticket_count: remaining.length }))
+      setToast('Ticket removed')
+      if (!remaining.length) setView('import')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const moveBacklogTicket = async (index, direction) => {
+    const destination = index + direction
+    if (destination < 0 || destination >= tickets.length) return
+    const reordered = [...tickets]
+    const [moved] = reordered.splice(index, 1)
+    reordered.splice(destination, 0, moved)
+    try {
+      const persisted = await api.reorderTickets(room.id, reordered.map((ticket) => ticket.id))
+      setTickets(persisted)
+    } catch (error) {
+      setToast(error.message)
     }
   }
 
@@ -384,11 +498,13 @@ function Workspace({ user }) {
         <ParticipantRoster members={members} currentUserId={user.id} compact />
         {formError && <p className="form-error inline-error">{formError}</p>}
         <section className="import-grid">
-          <div className="panel import-editor"><div className="panel-label"><span>CSV input</span><small>01</small></div><textarea value={importText} onChange={(event) => setImportText(event.target.value)} /><div className="editor-actions"><label className="secondary file-picker">Choose file<input type="file" accept=".csv,.tsv,.txt" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setImportText(String(reader.result || '')); reader.readAsText(file) }} /></label><span>CSV, TSV or plain text</span></div></div>
-          <div className="panel preview"><div className="panel-label"><span>Preview</span><small>{String(parsedTickets.length).padStart(2, '0')}</small></div>{parsedTickets.map((item) => <div className="preview-row" key={item.id}><span>{item.issue_key}</span><p>{item.summary}</p><small>{item.issue_type}</small></div>)}<button className="primary wide" disabled={!parsedTickets.length} onClick={startImportedSession}>Start session <span>→</span></button></div>
+          <div className="panel import-editor"><div className="panel-label"><span>CSV or TSV input</span><small>01</small></div><textarea aria-label="Jira import" value={importText} onChange={(event) => setImportText(event.target.value)} /><label className="duplicate-choice">Existing Jira keys<select value={duplicateBehavior} onChange={(event) => setDuplicateBehavior(event.target.value)}><option value="error">Ask me to decide</option><option value="skip">Skip existing</option><option value="replace">Replace existing</option></select></label><div className="editor-actions"><label className="secondary file-picker">Choose file<input type="file" accept=".csv,.tsv,.txt" onChange={(event) => loadImportFile(event.target.files?.[0])} /></label><span>Maximum 1 MB · 500 tickets</span></div></div>
+          <div className="panel preview"><div className="panel-label"><span>Validated preview</span><small>{String(importPreview?.source_count || 0).padStart(2, '0')}</small></div>{previewing && <p className="preview-message">Checking rows…</p>}{importPreview?.errors.map((error) => <div className="import-error" key={`${error.row_number}-${error.field}`}><strong>Row {error.row_number || '—'} · {error.field}</strong><span>{error.message}</span><small>{error.fix}</small></div>)}{!previewing && importPreview?.rows.map((item) => <div className="preview-row" key={`${item.row_number}-${item.issue_key || item.summary}`}><span>{item.issue_key || 'Manual'}</span><p>{item.summary}</p><small>{item.action}</small></div>)}<div className="preview-counts"><span>{importPreview?.saved_count || 0} to save</span><span>{importPreview?.skipped_count || 0} skipped</span></div><button className="primary wide" disabled={previewing || importing || !importPreview?.saved_count || importPreview.errors.length > 0} onClick={saveImport}>{importing ? 'Saving tickets…' : `Save ${importPreview?.saved_count || 0} to backlog`} <span>→</span></button></div>
         </section>
+        <div className="manual-entry"><span>Not in Jira?</span><button className="secondary" onClick={openNewTicket}>Add a ticket manually</button></div>
       </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
+      {ticketDraft && <TicketEditor draft={ticketDraft} setDraft={setTicketDraft} editing={Boolean(editingTicketId)} error={formError} onClose={() => setTicketDraft(null)} onSave={saveTicketDraft} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
   )
@@ -397,11 +513,12 @@ function Workspace({ user }) {
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
       <main className="page backlog-page">
         <div className="page-toolbar"><Back onClick={goToRooms}>Rooms</Back>{roomActions}</div>
-        <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Backlog</h1><p>{completion}% priced · {tickets.filter((ticket) => ticket.story_points == null).length} tickets need a conversation</p></div>{isFacilitator && <button className="primary" disabled={nextUnsizedIndex < 0} onClick={() => openTicket(nextUnsizedIndex)}>Price next ticket <span>→</span></button>}</section>
+        <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Backlog</h1><p>{completion}% priced · {tickets.filter((ticket) => ticket.story_points == null).length} tickets need a conversation</p></div>{isFacilitator && <div className="heading-actions"><button className="secondary" onClick={openNewTicket}>Add ticket</button><button className="primary" disabled={nextUnsizedIndex < 0} onClick={() => openTicket(nextUnsizedIndex)}>Price next ticket <span>→</span></button></div>}</section>
         <ParticipantRoster members={members} currentUserId={user.id} compact />
-        <div className="ticket-table panel"><div className="ticket-row ticket-head"><span>Key</span><span>Summary</span><span>Type</span><span>Points</span></div>{tickets.map((item, index) => <button className="ticket-row" key={item.id} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>)}</div>
+        <BacklogTable tickets={tickets} isFacilitator={isFacilitator} onOpen={openTicket} onEdit={openTicketEditor} onDelete={deleteBacklogTicket} onMove={moveBacklogTicket} />
       </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
+      {ticketDraft && <TicketEditor draft={ticketDraft} setDraft={setTicketDraft} editing={Boolean(editingTicketId)} error={formError} onClose={() => setTicketDraft(null)} onSave={saveTicketDraft} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
   )
@@ -491,6 +608,18 @@ function SignIn() {
   }
 
   return <div className="auth-page"><Logo /><form className="auth-panel panel" onSubmit={submit}><p className="eyebrow">Facilitator access</p><h1>Sign in to create a room.</h1><p>We’ll email you a secure sign-in link. Team members join separately through the room URL.</p><label>Work email<input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>{message && <p className="auth-message">{message}</p>}<button className="primary wide" disabled={sending}>{sending ? 'Sending link…' : 'Email me a sign-in link'} <span>→</span></button></form></div>
+}
+
+function BacklogTable({ tickets, isFacilitator, onOpen, onEdit, onDelete, onMove }) {
+  return <div className="ticket-table panel"><div className="ticket-row ticket-head"><span>Key</span><span>Summary</span><span>Type</span><span>Points</span></div>{tickets.map((item, index) => <div className="backlog-row" key={item.id}><button className="ticket-row ticket-open" onClick={() => onOpen(index)}><span>{item.issue_key || 'Manual'}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>{isFacilitator && <div className="ticket-actions"><button disabled={index === 0} onClick={() => onMove(index, -1)} aria-label={`Move ${item.summary} up`}>↑</button><button disabled={index === tickets.length - 1} onClick={() => onMove(index, 1)} aria-label={`Move ${item.summary} down`}>↓</button><button onClick={() => onEdit(item)} aria-label={`Edit ${item.summary}`}>Edit</button><button className="danger-text" onClick={() => onDelete(item)} aria-label={`Remove ${item.summary}`}>Remove</button></div>}</div>)}</div>
+}
+
+function TicketEditor({ draft, setDraft, editing, error, onClose, onSave }) {
+  const submit = (event) => {
+    event.preventDefault()
+    onSave()
+  }
+  return <div className="modal-backdrop" role="presentation"><form className="settings-panel ticket-editor panel" role="dialog" aria-modal="true" aria-labelledby="ticket-editor-title" onSubmit={submit}><div className="panel-label"><span id="ticket-editor-title">{editing ? 'Edit ticket' : 'Add ticket'}</span><button type="button" onClick={onClose} aria-label="Close ticket editor">×</button></div><label>Issue key <small>Optional</small><input value={draft.issue_key} maxLength={40} onChange={(event) => setDraft({ ...draft, issue_key: event.target.value })} placeholder="PAY-123" /></label><label>Summary<input required value={draft.summary} maxLength={500} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} /></label><label>Type<input required value={draft.issue_type} maxLength={80} onChange={(event) => setDraft({ ...draft, issue_type: event.target.value })} /></label><label>Description<textarea value={draft.description} maxLength={20000} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary">{editing ? 'Save changes' : 'Add to backlog'}</button></div></form></div>
 }
 
 function RoomSettings({ draft, setDraft, ticketCount, error, onClose, onSave }) {

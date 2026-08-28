@@ -8,17 +8,24 @@ from fastapi.responses import JSONResponse
 
 from .auth import Principal, PrincipalDep
 from .config import Settings, get_settings
+from .jira import parse_jira_import
 from .models import (
     EstimateUpdate,
+    JiraImportPreview,
+    JiraImportRequest,
     Room,
     RoomCreate,
     RoomJoin,
     RoomMember,
     RoomUpdate,
     Ticket,
-    TicketImport,
+    TicketCreate,
+    TicketImportResult,
+    TicketOrder,
+    TicketUpdate,
 )
 from .repositories import (
+    ConflictError,
     ForbiddenError,
     InMemoryRepository,
     NotFoundError,
@@ -58,6 +65,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(ForbiddenError)
     async def forbidden_handler(_: Request, error: ForbiddenError) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(error)})
+
+    @app.exception_handler(ConflictError)
+    async def conflict_handler(_: Request, error: ConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(error)})
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -119,14 +130,93 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> list[Ticket]:
         return repository.list_tickets(room_id, actor)
 
-    @app.post("/api/rooms/{room_id}/tickets/import", response_model=list[Ticket])
+    def import_preview(
+        room_id: UUID,
+        payload: JiraImportRequest,
+        repository: Repository,
+        actor: Principal,
+    ) -> JiraImportPreview:
+        room = repository.get_room(room_id, actor)
+        if room.owner_id != actor.id:
+            raise ForbiddenError("Only the facilitator can change the backlog")
+        return parse_jira_import(
+            payload.content,
+            payload.duplicate_behavior,
+            repository.list_tickets(room_id, actor),
+        )
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets/import/preview",
+        response_model=JiraImportPreview,
+    )
+    def preview_ticket_import(
+        room_id: UUID,
+        payload: JiraImportRequest,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> JiraImportPreview:
+        return import_preview(room_id, payload, repository, actor)
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets/import", response_model=TicketImportResult
+    )
     def import_tickets(
         room_id: UUID,
-        payload: TicketImport,
+        payload: JiraImportRequest,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> TicketImportResult:
+        preview = import_preview(room_id, payload, repository, actor)
+        if preview.errors:
+            raise HTTPException(
+                status_code=422,
+                detail=[error.model_dump() for error in preview.errors],
+            )
+        return repository.import_tickets(room_id, preview.rows, actor)
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets",
+        response_model=Ticket,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_ticket(
+        room_id: UUID,
+        payload: TicketCreate,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> Ticket:
+        return repository.create_ticket(room_id, payload, actor)
+
+    @app.patch("/api/rooms/{room_id}/tickets/{ticket_id}", response_model=Ticket)
+    def update_ticket(
+        room_id: UUID,
+        ticket_id: UUID,
+        payload: TicketUpdate,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> Ticket:
+        return repository.update_ticket(room_id, ticket_id, payload, actor)
+
+    @app.delete(
+        "/api/rooms/{room_id}/tickets/{ticket_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_ticket(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> None:
+        repository.delete_ticket(room_id, ticket_id, actor)
+
+    @app.put("/api/rooms/{room_id}/tickets/order", response_model=list[Ticket])
+    def reorder_tickets(
+        room_id: UUID,
+        payload: TicketOrder,
         repository: RepositoryDep,
         actor: PrincipalDep,
     ) -> list[Ticket]:
-        return repository.import_tickets(room_id, payload.tickets, actor)
+        return repository.reorder_tickets(room_id, payload.ticket_ids, actor)
 
     @app.patch("/api/tickets/{ticket_id}/estimate", response_model=Ticket)
     def update_estimate(
