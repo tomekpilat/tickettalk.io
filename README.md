@@ -2,6 +2,8 @@
 
 Planning poker for pricing product stories in focused team sessions.
 
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the product architecture, trust boundaries, data model, and end-to-end data flows.
+
 ## Stack
 
 - React 19 + Vite (plain JavaScript and CSS)
