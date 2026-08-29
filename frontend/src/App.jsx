@@ -119,7 +119,13 @@ function Workspace({ user }) {
       } else {
         setVoteResults(null)
       }
-      setView(nextRoom.active_ticket_id ? 'session' : nextTickets.length ? 'backlog' : 'import')
+      const allTicketsPriced = nextTickets.length > 0
+        && nextTickets.every((ticket) => ticket.final_estimate != null)
+      setView(nextRoom.active_ticket_id
+        ? 'session'
+        : allTicketsPriced
+          ? 'summary'
+          : nextTickets.length ? 'backlog' : 'import')
       setApiOnline(true)
       if (options.push !== false) pushPath(roomPath(nextRoom.id))
     } catch (error) {
@@ -182,20 +188,23 @@ function Workspace({ user }) {
             setVoteSubmitted(freshMembers.some(
               (member) => member.user_id === user.id && member.has_voted
             ))
-            if (freshRoom.active_ticket_id !== room.active_ticket_id) setChoosingVote(false)
+            const activeTicketChanged = freshRoom.active_ticket_id !== room.active_ticket_id
+            if (activeTicketChanged) setChoosingVote(false)
             setTicketIndex(activeIndex)
             if (freshTickets[activeIndex].vote_state === 'revealed') {
               setVoteResults(await api.voteResults(room.id, freshTickets[activeIndex].id))
             } else {
               setVoteResults(null)
             }
-            setView('session')
+            if (activeTicketChanged) setView('session')
           }
         } else if (room.active_ticket_id) {
           setVoteSubmitted(false)
           setChoosingVote(false)
           setVoteResults(null)
-          setView(freshTickets.length ? 'backlog' : 'import')
+          const allTicketsPriced = freshTickets.length > 0
+            && freshTickets.every((ticket) => ticket.final_estimate != null)
+          setView(allTicketsPriced ? 'summary' : freshTickets.length ? 'backlog' : 'import')
         }
       } catch { /* the next user action will surface connectivity or authorization */ }
     })
@@ -225,6 +234,14 @@ function Workspace({ user }) {
     ? Math.round((tickets.filter((item) => item.final_estimate != null).length / tickets.length) * 100)
     : 0
   const nextUnsizedIndex = tickets.findIndex((item) => item.final_estimate == null)
+  const nextUnsizedAfterCurrent = tickets.findIndex(
+    (item, index) => index > ticketIndex && item.final_estimate == null
+  )
+  const remainingUnsizedIndex = nextUnsizedAfterCurrent >= 0
+    ? nextUnsizedAfterCurrent
+    : tickets.findIndex(
+      (item, index) => index !== ticketIndex && item.final_estimate == null
+    )
   const votingScale = scales[room?.scale] || scales.fibonacci
   const isFacilitator = Boolean(room && room.owner_id === user.id)
 
@@ -520,6 +537,26 @@ function Workspace({ user }) {
   }
 
   const nextTicket = (options = {}) => openTicket(ticketIndex + 1, options)
+
+  const finishVoting = async () => {
+    try {
+      const updatedRoom = await api.setActiveTicket(room.id, null)
+      setRoom(updatedRoom)
+      setVoteSubmitted(false)
+      setChoosingVote(false)
+      setVoteResults(null)
+      setView('summary')
+      setToast('Voting complete')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const continueAfterEstimate = (options = {}) => (
+    remainingUnsizedIndex < 0
+      ? finishVoting()
+      : openTicket(remainingUnsizedIndex, options)
+  )
   const votedCount = members.filter((member) => member.has_voted).length
 
   const shareRoom = async () => {
@@ -655,7 +692,7 @@ function Workspace({ user }) {
 
   if (view === 'summary') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
-      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView('session')}>Session</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.final_estimate == null ? 'empty-points' : ''}>{item.final_estimate ?? '—'}</b></button>)}</div></main>
+      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView(room.active_ticket_id ? 'session' : 'backlog')}>{room.active_ticket_id ? 'Session' : 'Backlog'}</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.final_estimate == null ? 'empty-points' : ''}>{item.final_estimate ?? '—'}</b></button>)}</div></main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
@@ -667,7 +704,7 @@ function Workspace({ user }) {
       <main className="session-main">
         <ParticipantRoster members={members} currentUserId={user.id} compact />
         <section className="story-copy"><p className="eyebrow">{current?.issue_key} · {current?.issue_type}</p><h1>{current?.summary}</h1>{showDetail && <p className="description">{current?.description || 'No ticket description supplied.'}</p>}</section>
-        {voteResults?.state === 'revealed' ? <Results results={voteResults} scale={votingScale} isFacilitator={isFacilitator} onEstimate={saveFinalEstimate} onNext={nextTicket} onRevote={restartVote} /> : <>{(!voteSubmitted || choosingVote) ? <section className="vote-area"><p className="micro-label">{voteSubmitted ? 'Choose a replacement estimate' : 'Choose your estimate'}</p><div className="cards">{votingScale.map((value) => <button key={value} disabled={submittingVote} onClick={() => submitVote(value)}>{value}</button>)}</div></section> : <section className="vote-safe-state" role="status"><strong>Vote submitted</strong><span>Your estimate stays hidden until the facilitator reveals the cards.</span><button className="secondary" onClick={() => setChoosingVote(true)}>Change vote</button></section>}<section className="waiting"><div className="avatars">{members.map((member) => <span className={member.has_voted ? 'voted' : ''} key={member.user_id}>{initials(member.display_name)}</span>)}</div><p>{votedCount} of {members.length} voted</p>{isFacilitator && <button className="reveal" disabled={votedCount === 0} onClick={revealVotes}>Reveal votes</button>}</section></>}
+        {voteResults?.state === 'revealed' ? <Results results={voteResults} scale={votingScale} isFacilitator={isFacilitator} finishesVoting={remainingUnsizedIndex < 0} onEstimate={saveFinalEstimate} onNext={continueAfterEstimate} onRevote={restartVote} /> : <>{(!voteSubmitted || choosingVote) ? <section className="vote-area"><p className="micro-label">{voteSubmitted ? 'Choose a replacement estimate' : 'Choose your estimate'}</p><div className="cards">{votingScale.map((value) => <button key={value} disabled={submittingVote} onClick={() => submitVote(value)}>{value}</button>)}</div></section> : <section className="vote-safe-state" role="status"><strong>Vote submitted</strong><span>Your estimate stays hidden until the facilitator reveals the cards.</span><button className="secondary" onClick={() => setChoosingVote(true)}>Change vote</button></section>}<section className="waiting"><div className="avatars">{members.map((member) => <span className={member.has_voted ? 'voted' : ''} key={member.user_id}>{initials(member.display_name)}</span>)}</div><p>{votedCount} of {members.length} voted</p>{isFacilitator && <button className="reveal" disabled={votedCount === 0} onClick={revealVotes}>Reveal votes</button>}</section></>}
       </main>
       <footer className="ticket-rail"><button disabled={!isFacilitator || ticketIndex === 0} onClick={() => openTicket(ticketIndex - 1)} aria-label="Previous ticket">←</button><div>{tickets.map((item, index) => <button key={item.id} disabled={!isFacilitator} className={index === ticketIndex ? 'active' : item.story_points != null ? 'done' : ''} onClick={() => openTicket(index)} aria-label={`Open ticket ${index + 1}`}>{String(index + 1).padStart(2, '0')}</button>)}</div><button disabled={!isFacilitator || ticketIndex === tickets.length - 1} onClick={nextTicket} aria-label="Next ticket">→</button></footer>
       {toast && <Toast>{toast}</Toast>}
@@ -735,7 +772,7 @@ function RoomSettings({ draft, setDraft, ticketCount, error, onClose, onSave, on
   return <div className="modal-backdrop" role="presentation"><section className="settings-panel panel" role="dialog" aria-modal="true" aria-labelledby="room-settings-title"><div className="panel-label"><span id="room-settings-title">Room settings</span><button onClick={onClose} aria-label="Close settings">×</button></div><label>Room name<input value={draft.name} maxLength={120} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Scale<select value={draft.scale} disabled={locked} onChange={(event) => setDraft({ ...draft, scale: event.target.value })}>{scaleChoices.map((choice) => <option value={choice.value} key={choice.value}>{choice.label}</option>)}</select></label><label>Reveal<select value={draft.reveal_mode} disabled={locked} onChange={(event) => setDraft({ ...draft, reveal_mode: event.target.value })}><option value="manual">Manual</option><option value="auto">When all voted</option></select></label>{locked && <p className="settings-note">Scale and reveal mode lock after tickets are added.</p>}{error && <p className="form-error">{error}</p>}<div className="danger-zone"><span><strong>Delete this room</strong><small>Members, tickets, votes, and estimates will be removed.</small></span><button className="danger-text" onClick={onDelete}>Delete room</button></div><div className="modal-actions"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" onClick={onSave}>Save settings</button></div></section></div>
 }
 
-function Results({ results, scale, isFacilitator, onEstimate, onNext, onRevote }) {
+function Results({ results, scale, isFacilitator, finishesVoting, onEstimate, onNext, onRevote }) {
   const [finalEstimate, setFinalEstimate] = useState(results.final_estimate)
   useEffect(() => setFinalEstimate(results.final_estimate), [results.final_estimate])
   const range = results.minimum == null ? '—' : results.minimum === results.maximum
@@ -748,7 +785,7 @@ function Results({ results, scale, isFacilitator, onEstimate, onNext, onRevote }
     if (!finalEstimate) return
     if (await onEstimate(finalEstimate)) onNext({ skipEstimateWarning: true })
   }
-  return <section className="results"><div className="result-cards">{results.votes.map((vote) => <div key={vote.user_id}><strong>{vote.value}</strong><span>{vote.display_name}</span></div>)}</div><div className="consensus"><div><strong>{results.average ?? '—'}</strong><span>Average</span></div><div><strong>{range}</strong><span>Range</span></div><div><strong className={results.consensus === 'unanimous' || results.consensus === 'close' ? 'good' : ''}>{consensusLabels[results.consensus] || '—'}</strong><span>Consensus</span></div></div>{isFacilitator && <><div className="final-estimate"><p className="micro-label">Set final estimate</p><div>{scale.filter((point) => point !== '?').map((point) => <button className={finalEstimate === point ? 'active' : ''} key={point} onClick={() => setFinalEstimate(point)}>{point}</button>)}</div></div><div className="result-actions"><button className="secondary" onClick={onRevote}>Re-vote</button><button className="primary" disabled={!finalEstimate} onClick={saveAndNext}>Save & next <span>→</span></button></div></>}</section>
+  return <section className="results"><div className="result-cards">{results.votes.map((vote) => <div key={vote.user_id}><strong>{vote.value}</strong><span>{vote.display_name}</span></div>)}</div><div className="consensus"><div><strong>{results.average ?? '—'}</strong><span>Average</span></div><div><strong>{range}</strong><span>Range</span></div><div><strong className={results.consensus === 'unanimous' || results.consensus === 'close' ? 'good' : ''}>{consensusLabels[results.consensus] || '—'}</strong><span>Consensus</span></div></div>{isFacilitator && <><div className="final-estimate"><p className="micro-label">Set final estimate</p><div>{scale.filter((point) => point !== '?').map((point) => <button className={finalEstimate === point ? 'active' : ''} key={point} onClick={() => setFinalEstimate(point)}>{point}</button>)}</div></div><div className="result-actions"><button className="secondary" onClick={onRevote}>Re-vote</button><button className="primary" disabled={!finalEstimate} onClick={saveAndNext}>{finishesVoting ? 'Save & finish' : 'Save & next'} <span>→</span></button></div></>}</section>
 }
 
 function CenteredState({ eyebrow, title, detail, action }) {
