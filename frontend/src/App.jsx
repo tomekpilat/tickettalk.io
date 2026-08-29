@@ -31,6 +31,15 @@ function initials(name) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'TT'
 }
 
+function TicketDescription({ description }) {
+  const paragraphs = (description?.trim() || 'No ticket description supplied.')
+    .split(/\r?\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+
+  return <div className="description">{paragraphs.map((paragraph, index) => <p key={`${index}-${paragraph}`}>{paragraph}</p>)}</div>
+}
+
 function App() {
   const auth = useAuth()
   const [joiningRoomId, setJoiningRoomId] = useState(null)
@@ -897,10 +906,10 @@ function Workspace({ user }) {
       <header className="session-top">{isFacilitator ? <Back onClick={() => setView('backlog')}>Backlog</Back> : <span className="session-role">Live session</span>}<div><strong>{room.name}</strong><span>{ticketIndex + 1} of {tickets.length}</span></div><div className="session-actions">{isFacilitator && <button onClick={shareRoom}>Share</button>}<button onClick={() => setShowDetail((value) => !value)}>{showDetail ? 'Hide' : 'Ticket'} detail</button><button onClick={() => setView('summary')}>Summary</button></div></header>
       <main className="session-main">
         <ParticipantRoster members={members} currentUserId={user.id} compact />
-        <section className="story-copy"><p className="eyebrow">{current?.issue_key} · {current?.issue_type}</p><h1>{current?.summary}</h1>{showDetail && <p className="description">{current?.description || 'No ticket description supplied.'}</p>}</section>
+        <section className="story-copy"><p className="eyebrow">{current?.issue_key} · {current?.issue_type}</p><h1>{current?.summary}</h1>{showDetail && <TicketDescription description={current?.description} />}</section>
         {voteResults?.state === 'revealed' ? <Results results={voteResults} scale={votingScale} isFacilitator={isFacilitator} finishesVoting={remainingUnsizedIndex < 0} onEstimate={saveFinalEstimate} onNext={continueAfterEstimate} onRevote={restartVote} /> : <>{(!voteSubmitted || choosingVote) ? <section className="vote-area"><p className="micro-label">{voteSubmitted ? 'Choose a replacement estimate' : 'Choose your estimate'}</p><div className="cards">{votingScale.map((value) => <button key={value} disabled={submittingVote} onClick={() => submitVote(value)}>{value}</button>)}</div></section> : <section className="vote-safe-state" role="status"><strong>Vote submitted</strong><span>Your estimate stays hidden until the facilitator reveals the cards.</span><button className="secondary" onClick={() => setChoosingVote(true)}>Change vote</button></section>}<section className="waiting"><div className="avatars">{members.map((member) => <span className={member.has_voted ? 'voted' : ''} key={member.user_id}>{initials(member.display_name)}</span>)}</div><p>{votedCount} of {members.length} voted</p>{isFacilitator && <button className="reveal" disabled={votedCount === 0} onClick={revealVotes}>Reveal votes</button>}</section></>}
       </main>
-      <footer className="ticket-rail"><button disabled={!isFacilitator || ticketIndex === 0} onClick={() => openTicket(ticketIndex - 1)} aria-label="Previous ticket">←</button><div>{tickets.map((item, index) => <button key={item.id} disabled={!isFacilitator} className={index === ticketIndex ? 'active' : item.story_points != null ? 'done' : ''} onClick={() => openTicket(index)} aria-label={`Open ticket ${index + 1}`}>{String(index + 1).padStart(2, '0')}</button>)}</div><button disabled={!isFacilitator || ticketIndex === tickets.length - 1} onClick={nextTicket} aria-label="Next ticket">→</button></footer>
+      <footer className="ticket-rail"><button disabled={!isFacilitator || ticketIndex === 0} onClick={() => openTicket(ticketIndex - 1)} aria-label="Previous ticket">←</button><div>{tickets.map((item, index) => { const label = item.issue_key || `Manual ${index + 1}`; return <button key={item.id} disabled={!isFacilitator} className={index === ticketIndex ? 'active' : item.story_points != null ? 'done' : ''} onClick={() => openTicket(index)} aria-label={`Open ticket ${label}`} title={item.summary}>{label}</button> })}</div><button disabled={!isFacilitator || ticketIndex === tickets.length - 1} onClick={nextTicket} aria-label="Next ticket">→</button></footer>
       {toast && <Toast>{toast}</Toast>}
     </div>
   )
