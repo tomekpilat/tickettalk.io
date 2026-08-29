@@ -665,7 +665,7 @@ def test_export_is_server_authorized_and_delete_cascades(caplog) -> None:
             "Issue type",
             "Description",
             "Original story points",
-            "Final Tickettalks estimate",
+            "Final Tickettalk estimate",
         ]
         assert rows[1] == [
             "PAY-900",

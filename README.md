@@ -1,4 +1,4 @@
-# tickettalks
+# tickettalk
 
 Planning poker for pricing product stories in focused team sessions.
 
@@ -8,7 +8,7 @@ Planning poker for pricing product stories in focused team sessions.
 - FastAPI + Pydantic
 - Supabase Postgres, Auth, Realtime, and row-level security
 
-Tickettalks requires no registration, email, or password. In production, each browser receives a persistent anonymous Supabase identity. A room's random UUID URL is its private capability link, while the creating browser retains the facilitator role. In development, the app can run without Supabase credentials by using a fixed anonymous facilitator and an in-memory repository. Production refuses to start without Supabase credentials and never enables the development identity.
+tickettalk requires no registration, email, or password. In production, each browser receives a persistent anonymous Supabase identity. A room's random UUID URL is its private capability link, while the creating browser retains the facilitator role. In development, the app can run without Supabase credentials by using a fixed anonymous facilitator and an in-memory repository. Production refuses to start without Supabase credentials and never enables the development identity.
 
 ## Run locally
 
@@ -45,7 +45,7 @@ The initial migration creates profiles, rooms, memberships, tickets, and votes; 
 ## Room workflow
 
 1. Enter a display name and create a room with a name, estimation scale, and reveal mode.
-2. Tickettalks generates a random UUID and canonical `/rooms/<uuid>` capability URL.
+2. tickettalk generates a random UUID and canonical `/rooms/<uuid>` capability URL.
 3. Share that private URL with the intended participants; anyone who has the complete URL can request membership.
 4. A teammate opens the URL, enters a display name, and receives a persistent anonymous membership for that browser.
 5. Open **Room settings** to rename the room. Scale and reveal mode can be changed until tickets are added.
@@ -58,7 +58,7 @@ Votes are submitted through FastAPI and the response never includes the selected
 
 Manual and automatic reveal share a durable ticket-round state. Automatic mode counts members seen within the 45-second presence window and reveals atomically when the last eligible vote arrives. Re-vote clears prior values, increments the round, and clears the prior final estimate; numeric summaries and final estimates are restored after reconnect.
 
-Facilitators can download an authorized server-side CSV containing Jira metadata, original story points, and final Tickettalks estimates. Room deletion requires typing the exact room name and cascades through memberships, tickets, safe vote statuses, and private votes; the API logs only room and owner identifiers for the deletion event.
+Facilitators can download an authorized server-side CSV containing Jira metadata, original story points, and final tickettalk estimates. Room deletion requires typing the exact room name and cascades through memberships, tickets, safe vote statuses, and private votes; the API logs only room and owner identifiers for the deletion event.
 
 Jira imports accept CSV, TSV, pasted text, quoted commas, and multiline descriptions. Imports are limited to 1 MB and 500 tickets, validated by the API before saving, and require an explicit skip-or-replace choice for Jira keys already in the room. Facilitators can also add tickets without a Jira key and edit, reorder, or remove every backlog item; members retain read-only access.
 

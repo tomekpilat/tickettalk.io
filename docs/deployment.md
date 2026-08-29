@@ -1,6 +1,6 @@
 # Hetzner and Coolify deployment
 
-Tickettalks runs as two containers on the existing Hetzner host. Supabase remains external and managed; this Compose project does not run a database or publish host ports.
+tickettalk runs as two containers on the existing Hetzner host. Supabase remains external and managed; this Compose project does not run a database or publish host ports.
 
 ## Topology
 

@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "tickettalks api"
+    app_name: str = "tickettalk api"
     app_env: Literal["development", "test", "production"] = "development"
     frontend_origin: str = "http://localhost:5173"
     supabase_url: str | None = None
