@@ -100,7 +100,7 @@ describe('API client', () => {
     const success = jsonResponse()
     global.fetch.mockResolvedValueOnce(success)
     await expect(api.downloadRoomExport('room-1')).resolves.toEqual({
-      blob: expect.any(Blob), filename: 'tickettalks-export.csv',
+      blob: expect.any(Blob), filename: 'tickettalk-export.csv',
     })
 
     const failure = jsonResponse({}, 500)

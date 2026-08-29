@@ -20,7 +20,7 @@ const sampleImport = 'Issue key,Summary,Issue Type\nPAY-201,Add wallet balance a
 const emptyTicketDraft = { issue_key: '', summary: '', issue_type: 'Story', description: '' }
 
 function Logo() {
-  return <div className="logo"><span>ticket<strong>talks.</strong></span></div>
+  return <div className="logo"><span>ticket<strong>talk.</strong></span></div>
 }
 
 function initials(name) {
@@ -302,6 +302,11 @@ function Workspace({ user }) {
     } finally {
       setCreating(false)
     }
+  }
+
+  const openCreateRoom = () => {
+    setFormError('')
+    setView('create-room')
   }
 
   const saveImport = async () => {
@@ -615,33 +620,53 @@ function Workspace({ user }) {
     </Shell>
   )
 
-  if (view === 'rooms') return (
+  if (view === 'create-room') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
-      <main className="page rooms-page">
+      <main className="page create-room-page">
+        <div className="page-toolbar"><Back onClick={goToRooms}>Home</Back></div>
         <section className="page-heading">
-          <div><p className="eyebrow">Workspace / product</p><h1>Pricing rooms</h1><p>Make the work small enough to understand.</p></div>
+          <div><p className="eyebrow">New conversation</p><h1>Create a pricing room</h1><p>Choose how the team will estimate, then share the private room link.</p></div>
           <div className="account-caption"><span>{user.displayName}</span><small>Facilitator</small></div>
         </section>
-        <section className="rooms-grid">
-          <div className="new-room panel">
-            <div className="panel-label"><span>New room</span><small>01</small></div>
-            <p className="settings-note">No registration. The unique room link is the private access key for your team.</p>
-            <label>Your name<input value={facilitatorName} onChange={(event) => setFacilitatorName(event.target.value)} maxLength={80} placeholder="e.g. Maya" /></label>
-            <label>Room name<input value={roomName} onChange={(event) => setRoomName(event.target.value)} maxLength={120} /></label>
-            <fieldset className="choice-field"><legend>Scale</legend>{scaleChoices.map((choice) => <button key={choice.value} className={roomScale === choice.value ? 'choice active' : 'choice'} onClick={() => setRoomScale(choice.value)}><strong>{choice.label}</strong><small>{choice.hint}</small></button>)}</fieldset>
-            <fieldset className="choice-field"><legend>Reveal</legend><div className="segmented"><button className={revealMode === 'manual' ? 'active' : ''} onClick={() => setRevealMode('manual')}>Manual</button><button className={revealMode === 'auto' ? 'active' : ''} onClick={() => setRevealMode('auto')}>When all voted</button></div></fieldset>
-            {formError && <p className="form-error">{formError}</p>}
-            <button className="primary wide" disabled={creating} onClick={createRoom}>{creating ? 'Creating room…' : 'Create pricing room'} <span>→</span></button>
+        <div className="new-room panel">
+          <div className="panel-label"><span>Room setup</span><small>01</small></div>
+          <p className="settings-note">No registration. The unique room link is the private access key for your team.</p>
+          <label>Your name<input value={facilitatorName} onChange={(event) => setFacilitatorName(event.target.value)} maxLength={80} placeholder="e.g. Maya" /></label>
+          <label>Room name<input value={roomName} onChange={(event) => setRoomName(event.target.value)} maxLength={120} /></label>
+          <fieldset className="choice-field"><legend>Scale</legend>{scaleChoices.map((choice) => <button key={choice.value} className={roomScale === choice.value ? 'choice active' : 'choice'} onClick={() => setRoomScale(choice.value)}><strong>{choice.label}</strong><small>{choice.hint}</small></button>)}</fieldset>
+          <fieldset className="choice-field"><legend>Reveal</legend><div className="segmented"><button className={revealMode === 'manual' ? 'active' : ''} onClick={() => setRevealMode('manual')}>Manual</button><button className={revealMode === 'auto' ? 'active' : ''} onClick={() => setRevealMode('auto')}>When all voted</button></div></fieldset>
+          {formError && <p className="form-error">{formError}</p>}
+          <button className="primary wide" disabled={creating} onClick={createRoom}>{creating ? 'Creating room…' : 'Create pricing room'} <span>→</span></button>
+        </div>
+      </main>
+    </Shell>
+  )
+
+  if (view === 'rooms') return (
+    <Shell status={apiOnline} user={user} onRooms={goToRooms}>
+      <main className="page home-page">
+        <section className="home-hero">
+          <div className="home-copy">
+            <p className="eyebrow">Planning poker / without ceremony</p>
+            <h1>Talk through the work.<br />Leave with a price.</h1>
+            <p>tickettalk gives product teams one focused place to discuss stories, vote privately, and capture the estimate everyone can stand behind.</p>
+            <div className="home-actions"><button className="primary" onClick={openCreateRoom}>Start a room <span>→</span></button><span>No registration required</span></div>
           </div>
-          <div className="room-list">
-            <div className="section-kicker"><span>Active rooms</span><small>{String(rooms.length).padStart(2, '0')}</small></div>
-            {!rooms.length && <div className="empty-state">No rooms yet. Create the first pricing room.</div>}
-            {rooms.map((item) => <button className="room-card" key={item.id} onClick={() => openRoom(item.id)}>
-              <div className="room-card-top"><div><small>{item.scale}</small><h2>{item.name}</h2></div><span className="arrow">↗</span></div>
-              <div className="progress"><i style={{ width: `${item.ticket_count ? (item.sized_count / item.ticket_count) * 100 : 0}%` }} /></div>
-              <div className="room-meta"><span>{item.sized_count} / {item.ticket_count} sized</span><span>{item.total_points} pts</span></div>
-            </button>)}
-          </div>
+          <aside className="home-principles panel" aria-label="How tickettalk works">
+            <div className="panel-label"><span>One useful conversation</span><small>03 steps</small></div>
+            <div className="home-principle"><small>01</small><span><strong>Bring the stories</strong><em>Import Jira work or add tickets manually.</em></span></div>
+            <div className="home-principle"><small>02</small><span><strong>Vote without influence</strong><em>Estimates stay hidden until reveal.</em></span></div>
+            <div className="home-principle"><small>03</small><span><strong>Leave with decisions</strong><em>Save final prices and export the summary.</em></span></div>
+          </aside>
+        </section>
+        <section className="home-rooms">
+          <div className="home-rooms-heading"><div><p className="eyebrow">Your workspace</p><h2>Recent rooms</h2></div><button className="secondary" onClick={openCreateRoom}>New room <span>+</span></button></div>
+          {!rooms.length && <div className="empty-state">No rooms yet. Start a room when your team is ready to price the next piece of work.</div>}
+          <div className="home-room-grid">{rooms.map((item) => <button className="room-card" key={item.id} onClick={() => openRoom(item.id)}>
+            <div className="room-card-top"><div><small>{item.scale}</small><h2>{item.name}</h2></div><span className="arrow">↗</span></div>
+            <div className="progress"><i style={{ width: `${item.ticket_count ? (item.sized_count / item.ticket_count) * 100 : 0}%` }} /></div>
+            <div className="room-meta"><span>{item.sized_count} / {item.ticket_count} sized</span><span>{item.total_points} pts</span></div>
+          </button>)}</div>
         </section>
       </main>
     </Shell>
@@ -796,7 +821,7 @@ function Toast({ children }) { return <div className="toast" role="status">{chil
 function Back({ children, onClick }) { return <button className="back" onClick={onClick}>← {children}</button> }
 
 function Shell({ children, status, user, onRooms }) {
-  return <div><header className="app-header"><button className="logo-button" onClick={onRooms}><Logo /></button><nav><button onClick={onRooms}>Rooms</button><button disabled>People</button><button className="avatar" aria-label={user.displayName}>{initials(user.displayName)}</button></nav></header>{children}<footer className="app-footer"><Logo /><span><i className={status ? 'online' : ''} /> {status ? 'API connected' : 'API unavailable'}</span></footer></div>
+  return <div><header className="app-header"><button className="logo-button" aria-label="tickettalk" onClick={onRooms}><Logo /></button><nav><button onClick={onRooms}>Home</button><button className="avatar" aria-label={user.displayName}>{initials(user.displayName)}</button></nav></header>{children}<footer className="app-footer"><Logo /><span><i className={status ? 'online' : ''} /> {status ? 'API connected' : 'API unavailable'}</span></footer></div>
 }
 
 export default App

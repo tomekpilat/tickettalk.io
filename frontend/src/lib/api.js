@@ -40,7 +40,7 @@ async function download(path) {
     throw new ApiError(payload.detail || `Request failed with ${response.status}`, response.status)
   }
   const disposition = response.headers.get('Content-Disposition') || ''
-  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'tickettalks-export.csv'
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'tickettalk-export.csv'
   return { blob: await response.blob(), filename }
 }
 

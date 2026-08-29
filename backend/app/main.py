@@ -161,7 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Issue type",
                 "Description",
                 "Original story points",
-                "Final Tickettalks estimate",
+                "Final Tickettalk estimate",
             ]
         )
         for ticket in tickets:
