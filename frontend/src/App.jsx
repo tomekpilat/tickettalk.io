@@ -21,6 +21,7 @@ const scaleChoices = [
 
 const sampleImport = 'Issue key,Summary,Issue Type\nPAY-201,Add wallet balance alert,Story\nPAY-205,Fix duplicate webhook delivery,Bug'
 const emptyTicketDraft = { issue_key: '', summary: '', issue_type: 'Story', description: '' }
+const jiraIssueKeyPattern = /^[A-Z][A-Z0-9_]*-\d+$/
 
 function Logo() {
   return <div className="logo"><span>ticket<strong>talk.</strong></span></div>
@@ -72,9 +73,11 @@ function Workspace({ user }) {
   const [importPreview, setImportPreview] = useState(null)
   const [jiraConnection, setJiraConnection] = useState(null)
   const [jiraDraft, setJiraDraft] = useState({ site_url: '', email: '', api_token: '' })
+  const [jiraIssueKey, setJiraIssueKey] = useState('')
   const [jql, setJql] = useState('project = PAY AND resolution = Unresolved ORDER BY Rank ASC')
   const [jiraPreview, setJiraPreview] = useState(null)
   const [jiraConnecting, setJiraConnecting] = useState(false)
+  const [jiraAddingIssue, setJiraAddingIssue] = useState(false)
   const [jiraSearching, setJiraSearching] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -164,6 +167,7 @@ function Workspace({ user }) {
     setRouteError(null)
     setSettingsOpen(false)
     setJiraConnection(null)
+    setJiraIssueKey('')
     setJiraPreview(null)
     setJiraWriteback(null)
     refreshRooms()
@@ -361,6 +365,45 @@ function Workspace({ user }) {
       setFormError(error.message)
     } finally {
       setJiraSearching(false)
+    }
+  }
+
+  const addJiraIssue = async (event) => {
+    event.preventDefault()
+    const issueKey = jiraIssueKey.trim().toUpperCase()
+    if (!jiraIssueKeyPattern.test(issueKey)) {
+      setFormError('Enter a complete Jira issue key, for example PAY-123.')
+      return
+    }
+
+    const exactJql = `key = "${issueKey}"`
+    setFormError('')
+    setJiraAddingIssue(true)
+    try {
+      const preview = await api.searchJira(room.id, exactJql, duplicateBehavior)
+      if (preview.errors.length) {
+        setFormError(preview.errors.map((error) => error.message).join(' '))
+        return
+      }
+      if (preview.source_count !== 1) {
+        setFormError(`${issueKey} was not found or is not visible to the connected Jira account.`)
+        return
+      }
+      if (preview.saved_count !== 1) {
+        setToast(`${issueKey} is already in this room`)
+        return
+      }
+
+      const result = await api.importJira(room.id, exactJql, duplicateBehavior)
+      setTickets(result.tickets)
+      setRoom((currentRoom) => ({ ...currentRoom, ticket_count: result.tickets.length }))
+      setJiraIssueKey('')
+      setToast(`${issueKey} added to the backlog`)
+      setView('backlog')
+    } catch (error) {
+      setFormError(error.message)
+    } finally {
+      setJiraAddingIssue(false)
     }
   }
 
@@ -802,7 +845,7 @@ function Workspace({ user }) {
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
       <main className="page import-page">
         <div className="page-toolbar"><Back onClick={goToRooms}>Rooms</Back>{roomActions}</div>
-        <div className="split-heading"><div><p className="eyebrow">{room.name} / import</p><h1>Bring in the tickets.</h1></div><p>Pull directly from Jira with JQL, or paste a CSV export. The source context stays attached to every estimate.</p></div>
+        <div className="split-heading"><div><p className="eyebrow">{room.name} / import</p><h1>Bring in the tickets.</h1></div><p>Add one Jira issue by key, pull a set with JQL, or paste a CSV export. The source context stays attached to every estimate.</p></div>
         <ParticipantRoster members={members} currentUserId={user.id} compact />
         <div className="import-tabs segmented" aria-label="Import source"><button className={importMode === 'jira' ? 'active' : ''} onClick={() => setImportMode('jira')}>Jira + JQL</button><button className={importMode === 'csv' ? 'active' : ''} onClick={() => setImportMode('csv')}>CSV / TSV</button></div>
         {formError && <p className="form-error inline-error">{formError}</p>}
@@ -811,7 +854,7 @@ function Workspace({ user }) {
           <div className="panel preview"><div className="panel-label"><span>Validated preview</span><small>{String(importPreview?.source_count || 0).padStart(2, '0')}</small></div>{previewing && <p className="preview-message">Checking rows…</p>}{importPreview?.errors.map((error) => <div className="import-error" key={`${error.row_number}-${error.field}`}><strong>Row {error.row_number || '—'} · {error.field}</strong><span>{error.message}</span><small>{error.fix}</small></div>)}{!previewing && importPreview?.rows.map((item) => <div className="preview-row" key={`${item.row_number}-${item.issue_key || item.summary}`}><span>{item.issue_key || 'Manual'}</span><p>{item.summary}</p><small>{item.action}</small></div>)}<div className="preview-counts"><span>{importPreview?.saved_count || 0} to save</span><span>{importPreview?.skipped_count || 0} skipped</span></div><button className="primary wide" disabled={previewing || importing || !importPreview?.saved_count || importPreview.errors.length > 0} onClick={saveImport}>{importing ? 'Saving tickets…' : `Save ${importPreview?.saved_count || 0} to backlog`} <span>→</span></button></div>
         </section>}
         {importMode === 'jira' && !jiraConnection && <JiraConnectForm draft={jiraDraft} setDraft={setJiraDraft} connecting={jiraConnecting} onConnect={connectJira} />}
-        {importMode === 'jira' && jiraConnection && <JiraImportPanel connection={jiraConnection} jql={jql} setJql={setJql} duplicateBehavior={duplicateBehavior} setDuplicateBehavior={setDuplicateBehavior} preview={jiraPreview} searching={jiraSearching} importing={importing} onSelectField={selectJiraField} onDisconnect={disconnectJira} onSearch={searchJira} onImport={saveJiraImport} />}
+        {importMode === 'jira' && jiraConnection && <JiraImportPanel connection={jiraConnection} issueKey={jiraIssueKey} setIssueKey={setJiraIssueKey} addingIssue={jiraAddingIssue} jql={jql} setJql={setJql} duplicateBehavior={duplicateBehavior} setDuplicateBehavior={setDuplicateBehavior} preview={jiraPreview} searching={jiraSearching} importing={importing} onSelectField={selectJiraField} onDisconnect={disconnectJira} onAddIssue={addJiraIssue} onSearch={searchJira} onImport={saveJiraImport} />}
         <div className="manual-entry"><span>Not in Jira?</span><button className="secondary" onClick={openNewTicket}>Add a ticket manually</button></div>
       </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}

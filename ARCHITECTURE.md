@@ -282,6 +282,10 @@ sequenceDiagram
     API->>DB: encrypt and upsert room credential
     API-->>F: connection metadata only
 
+    F->>API: Add one issue key
+    API->>J: exact-key JQL preview + confirmed import
+    API->>DB: insert or refresh one ticket snapshot
+
     F->>API: Preview JQL
     API->>DB: verify room owner + decrypt credential
     API->>J: POST search/jql (paginated, selected fields)
@@ -300,7 +304,7 @@ sequenceDiagram
     API-->>F: per-ticket write-back result
 ```
 
-JQL saving deliberately re-runs the query instead of trusting browser preview rows. Imported tickets store Jira's immutable issue ID, mutable issue key, source estimate, source assignee, and source update timestamp. The existing duplicate policy remains keyed by the normalized issue key. Replacing a snapshot does not directly change vote rows or final estimates.
+The single-ticket path validates and normalizes a complete Jira issue key such as `PAY-123`, converts it to an exact-key JQL query, verifies that Jira returned one importable issue, and then uses the same confirmed import flow as bulk JQL. JQL saving deliberately re-runs the query instead of trusting browser preview rows. Imported tickets store Jira's immutable issue ID, mutable issue key, source estimate, source assignee, and source update timestamp. The existing duplicate policy remains keyed by the normalized issue key. Replacing a snapshot does not directly change vote rows or final estimates.
 
 The current write-back is synchronous and sequential. It is explicit rather than automatic: the summary lets the facilitator revise final estimates, choose a final assignable Jira user, then confirm one batch. The ownership chart is derived client-side from `tickets.final_assignee_display_name`; Jira-linked tickets are grouped by final Jira assignee, while manual tickets and Jira tickets without an owner are grouped as `Unassigned`. Each issue update sends the numeric final estimate to the discovered Story Points field and the final assignee as a Jira `accountId`. Failures are isolated and returned per ticket. T-shirt rooms cannot write to numeric Story Points and remain export-only.
 
