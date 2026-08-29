@@ -58,7 +58,7 @@ Generate `JIRA_ENCRYPTION_KEY` once with the command documented in the root READ
 4. Copy the client ID and secret into the API-only Coolify variables above. Never add the client secret to the frontend build variables.
 5. Redeploy the API and web services. In a disposable room, enter the intended `*.atlassian.net` site, choose **Continue with Atlassian**, approve that site, and verify import plus write-back.
 
-For local development, register `http://localhost:5173/jira/oauth/callback` as an additional callback and set that exact value in `JIRA_OAUTH_REDIRECT_URI`. Tickettalk matches the site typed before consent against Atlassian's accessible resources, which prevents silently connecting a different Jira tenant when an account can access several sites.
+Atlassian permits one exact callback URL per 3LO app. For local development, create a separate non-shared OAuth app with `http://localhost:5173/jira/oauth/callback`, and use its client ID, client secret, and callback in the local API environment. Do not reuse the production app or production client secret locally. Tickettalk matches the site typed before consent against Atlassian's accessible resources, which prevents silently connecting a different Jira tenant when an account can access several sites.
 
 ## First deployment checks
 
