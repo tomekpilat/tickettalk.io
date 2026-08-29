@@ -1,4 +1,5 @@
 import base64
+import json
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Self
@@ -34,6 +35,21 @@ class TokenCipher:
                 "The stored Jira credential cannot be decrypted; reconnect Jira"
             ) from error
 
+    def encrypt_state(self, values: dict[str, str]) -> str:
+        return self.fernet.encrypt(json.dumps(values).encode()).decode()
+
+    def decrypt_state(self, state: str, ttl: int = 600) -> dict[str, str]:
+        try:
+            payload = self.fernet.decrypt(state.encode(), ttl=ttl)
+            values = json.loads(payload)
+        except (InvalidToken, ValueError, TypeError, json.JSONDecodeError) as error:
+            raise JiraError("The Jira authorization request expired; connect again") from error
+        if not isinstance(values, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in values.items()
+        ):
+            raise JiraError("The Jira authorization request is invalid; connect again")
+        return values
+
 
 def generate_encryption_key() -> str:
     return Fernet.generate_key().decode()
@@ -61,17 +77,22 @@ class JiraClient:
     def __init__(
         self,
         site_url: str,
-        email: str,
-        api_token: str,
+        email: str | None,
+        credential: str,
         *,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        authorization = base64.b64encode(f"{email}:{api_token}".encode()).decode()
+        authorization = (
+            f"Basic {base64.b64encode(f'{email}:{credential}'.encode()).decode()}"
+            if email
+            else f"Bearer {credential}"
+        )
+        self.uses_oauth = email is None
         self.client = httpx.Client(
             base_url=site_url,
             headers={
                 "Accept": "application/json",
-                "Authorization": f"Basic {authorization}",
+                "Authorization": authorization,
                 "User-Agent": "tickettalk-jira/0.1",
             },
             timeout=httpx.Timeout(20, connect=10),
@@ -85,9 +106,10 @@ class JiraClient:
     def __exit__(self, *_: object) -> None:
         self.client.close()
 
-    @staticmethod
-    def _error(response: httpx.Response) -> JiraError:
+    def _error(self, response: httpx.Response) -> JiraError:
         if response.status_code == 401:
+            if self.uses_oauth:
+                return JiraError("Jira rejected the OAuth connection; reconnect Jira")
             return JiraError("Jira rejected the email or API token")
         if response.status_code == 403:
             return JiraError("The Jira account does not have permission for this action")

@@ -3,20 +3,24 @@ import { describe, expect, it, vi } from 'vitest'
 import { JiraConnectForm, JiraImportPanel, JiraWritebackPanel } from './JiraPanels.jsx'
 
 describe('Jira panels', () => {
-  it('keeps credential editing controlled by the parent', () => {
+  it('makes OAuth primary and keeps the API-token fallback controlled by the parent', () => {
     const setDraft = vi.fn()
-    const onConnect = vi.fn((event) => event.preventDefault())
-    render(<JiraConnectForm draft={{ site_url: '', email: '', api_token: '' }} setDraft={setDraft} connecting={false} onConnect={onConnect} />)
+    const onOAuthConnect = vi.fn((event) => event.preventDefault())
+    const onApiTokenConnect = vi.fn((event) => event.preventDefault())
+    render(<JiraConnectForm draft={{ site_url: '', email: '', api_token: '' }} setDraft={setDraft} connecting={false} onOAuthConnect={onOAuthConnect} onApiTokenConnect={onApiTokenConnect} />)
 
     fireEvent.change(screen.getByLabelText('Jira site URL'), {
       target: { value: 'https://example.atlassian.net' },
     })
-    fireEvent.submit(screen.getByRole('button', { name: 'Connect Jira' }).closest('form'))
+    fireEvent.submit(screen.getByRole('button', { name: /Continue with Atlassian/ }).closest('form'))
 
     expect(setDraft).toHaveBeenCalledWith({
       site_url: 'https://example.atlassian.net', email: '', api_token: '',
     })
-    expect(onConnect).toHaveBeenCalled()
+    expect(onOAuthConnect).toHaveBeenCalled()
+    expect(screen.getByText('Advanced: connect with an API token')).toBeVisible()
+    fireEvent.submit(screen.getByRole('button', { name: 'Connect with API token' }).closest('form'))
+    expect(onApiTokenConnect).toHaveBeenCalled()
   })
 
   it('renders JQL errors and delegates connection actions', () => {
@@ -25,6 +29,7 @@ describe('Jira panels', () => {
     const onSearch = vi.fn()
     render(<JiraImportPanel
       connection={{
+        oauth: true,
         site_url: 'https://example.atlassian.net',
         jira_display_name: 'Maya',
         story_points_field_id: 'customfield_1',
@@ -52,6 +57,7 @@ describe('Jira panels', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview tickets' }))
 
     expect(screen.getByText('Invalid query')).toBeVisible()
+    expect(screen.getByText('OAuth')).toBeVisible()
     expect(onSelectField).toHaveBeenCalledWith('customfield_2')
     expect(onDisconnect).toHaveBeenCalled()
     expect(onSearch).toHaveBeenCalled()

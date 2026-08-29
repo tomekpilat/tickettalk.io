@@ -13,11 +13,13 @@ from .config import Settings, get_settings
 from .dependencies import (
     RepositoryDep,
     get_jira_client_factory,
+    get_jira_oauth_client,
     get_repository,
     get_token_cipher,
 )
 from .jira import parse_jira_import
 from .jira_client import JiraError
+from .jira_routes import oauth_router as jira_oauth_router
 from .jira_routes import router as jira_router
 from .models import (
     ActiveTicketUpdate,
@@ -50,6 +52,7 @@ __all__ = [
     "app",
     "create_app",
     "get_jira_client_factory",
+    "get_jira_oauth_client",
     "get_repository",
     "get_token_cipher",
 ]
@@ -95,6 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(status_code=502, content={"detail": str(error)})
 
     app.include_router(jira_router)
+    app.include_router(jira_oauth_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

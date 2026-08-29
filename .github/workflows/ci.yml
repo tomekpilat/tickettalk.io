@@ -89,6 +89,9 @@ jobs:
       SUPABASE_URL: https://example.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ci-service-key
       JIRA_ENCRYPTION_KEY: ci-compose-placeholder
+      JIRA_OAUTH_CLIENT_ID: ci-oauth-client
+      JIRA_OAUTH_CLIENT_SECRET: ci-oauth-secret
+      JIRA_OAUTH_REDIRECT_URI: https://tickettalk.io/jira/oauth/callback
     steps:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet

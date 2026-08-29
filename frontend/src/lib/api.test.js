@@ -45,6 +45,8 @@ describe('API client', () => {
       [() => api.importTickets(roomId, 'csv', 'replace'), `/api/rooms/${roomId}/tickets/import`, 'POST'],
       [() => api.jiraConnection(roomId), `/api/rooms/${roomId}/jira/connection`, 'GET'],
       [() => api.connectJira(roomId, { site_url: 'https://example.atlassian.net' }), `/api/rooms/${roomId}/jira/connection`, 'POST'],
+      [() => api.authorizeJiraOAuth(roomId, 'https://example.atlassian.net'), `/api/rooms/${roomId}/jira/oauth/authorize`, 'POST'],
+      [() => api.completeJiraOAuth('code', 'state'), '/api/jira/oauth/callback', 'POST'],
       [() => api.selectJiraStoryPointsField(roomId, 'customfield_10016'), `/api/rooms/${roomId}/jira/connection/story-points-field`, 'PUT'],
       [() => api.disconnectJira(roomId), `/api/rooms/${roomId}/jira/connection`, 'DELETE'],
       [() => api.searchJira(roomId, 'project = PAY', 'skip'), `/api/rooms/${roomId}/jira/search`, 'POST'],

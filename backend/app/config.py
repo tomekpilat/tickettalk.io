@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
     jira_encryption_key: str | None = None
+    jira_oauth_client_id: str | None = None
+    jira_oauth_client_secret: str | None = None
+    jira_oauth_redirect_uri: str | None = None
     demo_auth_token: str = "dev-facilitator"
     rate_limit_join_per_minute: PositiveInt = 20
     rate_limit_import_per_minute: PositiveInt = 12
@@ -30,7 +33,6 @@ class Settings(BaseSettings):
     @property
     def supabase_configured(self) -> bool:
         return bool(self.supabase_url and self.supabase_service_role_key)
-
 
 @lru_cache
 def get_settings() -> Settings:

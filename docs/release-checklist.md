@@ -11,7 +11,7 @@
 - [x] Production Compose configuration and both images build in CI.
 - [x] Request logs are structured and tested not to expose authorization tokens.
 - [x] Rate-limit and dependency-readiness behavior is covered by API tests.
-- [x] Jira credentials, JQL import, assignee selection, write-back, RLS denial, and room-deletion cascade are covered by automated tests.
+- [x] Jira OAuth state/callback/refresh, advanced API-token credentials, JQL import, assignee selection, write-back, RLS denial, and room-deletion cascade are covered by automated tests.
 
 Configure GitHub branch protection for `main` to require all four CI jobs and an approving review. Configure Coolify to deploy only `main`; never use an unprotected feature branch as the production source.
 
@@ -32,6 +32,7 @@ Complete this section for the actual release; record evidence in the deployment 
 
 - [ ] Production Supabase migrations applied and anonymous Auth enabled.
 - [ ] Coolify domains, TLS, secrets, resource limits, and health checks verified.
+- [ ] Atlassian 3LO app is shared, exact callback and scopes are configured, and OAuth consent succeeds for a non-owner Atlassian account.
 - [ ] External web, API liveness, and Supabase readiness monitors alert the on-call channel and recovery notifications arrive.
 - [ ] Backup retention is recorded and an isolated restore drill has a successful date/result.
 - [ ] Desktop and phone smoke tests cover create, share, join, CSV and Jira import, select, two votes, reveal, estimate, summary ownership distribution, reassignment, price editing, Jira write-back, export, and exact-name delete.

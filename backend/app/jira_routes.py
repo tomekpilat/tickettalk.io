@@ -1,13 +1,19 @@
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
 from .auth import Principal, PrincipalDep
-from .dependencies import JiraClientFactoryDep, RepositoryDep, TokenCipherDep
+from .dependencies import (
+    JiraClientFactoryDep,
+    JiraOAuthClientDep,
+    RepositoryDep,
+    TokenCipherDep,
+)
 from .jira import preview_jira_rows
 from .jira_client import JiraClient, JiraError, TokenCipher, field_ids
+from .jira_oauth import AtlassianOAuthClient
 from .models import (
     FinalAssigneeUpdate,
     JiraConnection,
@@ -15,6 +21,10 @@ from .models import (
     JiraConnectionSecret,
     JiraFieldSelection,
     JiraImportPreview,
+    JiraOAuthAuthorizeRequest,
+    JiraOAuthAuthorizeResponse,
+    JiraOAuthCallbackRequest,
+    JiraOAuthCallbackResult,
     JiraSearchRequest,
     JiraUser,
     JiraWritebackItem,
@@ -25,6 +35,16 @@ from .models import (
 from .repositories import ConflictError, ForbiddenError, NotFoundError, Repository
 
 router = APIRouter(prefix="/api/rooms/{room_id}", tags=["jira"])
+oauth_router = APIRouter(prefix="/api/jira", tags=["jira"])
+
+SECRET_FIELDS = {
+    "auth_method",
+    "cloud_id",
+    "encrypted_api_token",
+    "encrypted_access_token",
+    "encrypted_refresh_token",
+    "token_expires_at",
+}
 
 
 def _require_facilitator(
@@ -35,18 +55,52 @@ def _require_facilitator(
 
 
 def _public_connection(connection: JiraConnectionSecret) -> JiraConnection:
-    return JiraConnection.model_validate(connection.model_dump(exclude={"encrypted_api_token"}))
+    return JiraConnection.model_validate(
+        connection.model_dump(exclude=SECRET_FIELDS) | {"oauth": connection.auth_method == "oauth"}
+    )
 
 
 def _client(
     connection: JiraConnectionSecret,
     cipher: TokenCipher,
-    client_factory: Callable[[str, str, str], JiraClient],
-) -> JiraClient:
-    return client_factory(
-        connection.site_url,
-        connection.email,
-        cipher.decrypt(connection.encrypted_api_token),
+    client_factory: Callable[[str, str | None, str], JiraClient],
+    oauth_client: AtlassianOAuthClient,
+    repository: Repository,
+    actor: Principal,
+) -> tuple[JiraConnectionSecret, JiraClient]:
+    if connection.auth_method == "api_token":
+        if not connection.email or not connection.encrypted_api_token:
+            raise JiraError("The stored Jira API-token connection is incomplete; reconnect Jira")
+        return connection, client_factory(
+            connection.site_url,
+            connection.email,
+            cipher.decrypt(connection.encrypted_api_token),
+        )
+
+    if not (
+        connection.cloud_id
+        and connection.encrypted_access_token
+        and connection.encrypted_refresh_token
+        and connection.token_expires_at
+    ):
+        raise JiraError("The stored Jira OAuth connection is incomplete; reconnect Jira")
+
+    if connection.token_expires_at <= datetime.now(UTC) + timedelta(seconds=60):
+        tokens = oauth_client.refresh(cipher.decrypt(connection.encrypted_refresh_token))
+        connection = connection.model_copy(
+            update={
+                "encrypted_access_token": cipher.encrypt(tokens.access_token),
+                "encrypted_refresh_token": cipher.encrypt(tokens.refresh_token),
+                "token_expires_at": tokens.expires_at,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        repository.save_jira_connection(connection, actor)
+
+    return connection, client_factory(
+        oauth_client.jira_api_url(connection.cloud_id),
+        None,
+        cipher.decrypt(connection.encrypted_access_token),
     )
 
 
@@ -56,10 +110,12 @@ def _jira_preview(
     repository: Repository,
     actor: Principal,
     cipher: TokenCipher,
-    client_factory: Callable[[str, str, str], JiraClient],
+    client_factory: Callable[[str, str | None, str], JiraClient],
+    oauth_client: AtlassianOAuthClient,
 ) -> JiraImportPreview:
     connection = repository.get_jira_connection(room_id, actor)
-    with _client(connection, cipher, client_factory) as jira:
+    connection, jira = _client(connection, cipher, client_factory, oauth_client, repository, actor)
+    with jira:
         rows = jira.search(payload.jql, connection.story_points_field_id)
     for row in rows:
         row.jira_site_url = connection.site_url
@@ -100,6 +156,7 @@ def connect_jira(
             room_id=room_id,
             owner_id=actor.id,
             site_url=payload.site_url,
+            auth_method="api_token",
             email=payload.email,
             encrypted_api_token=cipher.encrypt(payload.api_token),
             jira_account_id=identity["account_id"],
@@ -112,6 +169,89 @@ def connect_jira(
         actor,
     )
     return saved.model_copy(update={"story_points_fields": points_fields})
+
+
+@router.post("/jira/oauth/authorize", response_model=JiraOAuthAuthorizeResponse)
+def authorize_jira_oauth(
+    room_id: UUID,
+    payload: JiraOAuthAuthorizeRequest,
+    repository: RepositoryDep,
+    actor: PrincipalDep,
+    cipher: TokenCipherDep,
+    oauth_client: JiraOAuthClientDep,
+) -> JiraOAuthAuthorizeResponse:
+    _require_facilitator(room_id, repository, actor, "connect Jira")
+    state = cipher.encrypt_state(
+        {
+            "room_id": str(room_id),
+            "owner_id": str(actor.id),
+            "site_url": payload.site_url,
+        }
+    )
+    return JiraOAuthAuthorizeResponse(authorization_url=oauth_client.authorization_url(state))
+
+
+@oauth_router.post("/oauth/callback", response_model=JiraOAuthCallbackResult)
+def complete_jira_oauth(
+    payload: JiraOAuthCallbackRequest,
+    repository: RepositoryDep,
+    actor: PrincipalDep,
+    cipher: TokenCipherDep,
+    client_factory: JiraClientFactoryDep,
+    oauth_client: JiraOAuthClientDep,
+) -> JiraOAuthCallbackResult:
+    state = cipher.decrypt_state(payload.state)
+    if state.get("owner_id") != str(actor.id):
+        raise ForbiddenError("This Jira authorization belongs to another browser session")
+    try:
+        room_id = UUID(state["room_id"])
+        site_url = JiraOAuthAuthorizeRequest(site_url=state["site_url"]).site_url
+    except (KeyError, ValueError) as error:
+        raise JiraError("The Jira authorization request is invalid; connect again") from error
+    _require_facilitator(room_id, repository, actor, "connect Jira")
+
+    tokens = oauth_client.exchange_code(payload.code)
+    matches = [
+        resource
+        for resource in oauth_client.accessible_resources(tokens.access_token)
+        if resource.url.rstrip("/").casefold() == site_url.casefold()
+    ]
+    if len(matches) != 1:
+        raise JiraError(
+            "The approved Atlassian account cannot access that Jira site; "
+            "connect again with the correct site URL"
+        )
+    resource = matches[0]
+    with client_factory(oauth_client.jira_api_url(resource.id), None, tokens.access_token) as jira:
+        identity = jira.myself()
+        points_fields = jira.story_points_fields()
+    if not points_fields:
+        raise HTTPException(
+            status_code=422,
+            detail="No Jira Story Points field was found for this account",
+        )
+    now = datetime.now(UTC)
+    connection = JiraConnectionSecret(
+        room_id=room_id,
+        owner_id=actor.id,
+        site_url=site_url,
+        auth_method="oauth",
+        cloud_id=resource.id,
+        encrypted_access_token=cipher.encrypt(tokens.access_token),
+        encrypted_refresh_token=cipher.encrypt(tokens.refresh_token),
+        token_expires_at=tokens.expires_at,
+        jira_account_id=identity["account_id"],
+        jira_display_name=identity["display_name"],
+        story_points_field_id=points_fields[0].id,
+        story_points_fields=points_fields,
+        created_at=now,
+        updated_at=now,
+    )
+    saved = repository.save_jira_connection(connection, actor)
+    return JiraOAuthCallbackResult(
+        room_id=room_id,
+        connection=saved.model_copy(update={"story_points_fields": points_fields}),
+    )
 
 
 @router.get("/jira/connection", response_model=JiraConnection)
@@ -154,8 +294,9 @@ def preview_jira_search(
     actor: PrincipalDep,
     cipher: TokenCipherDep,
     client_factory: JiraClientFactoryDep,
+    oauth_client: JiraOAuthClientDep,
 ) -> JiraImportPreview:
-    return _jira_preview(room_id, payload, repository, actor, cipher, client_factory)
+    return _jira_preview(room_id, payload, repository, actor, cipher, client_factory, oauth_client)
 
 
 @router.post("/jira/import", response_model=TicketImportResult)
@@ -166,8 +307,11 @@ def import_jira_search(
     actor: PrincipalDep,
     cipher: TokenCipherDep,
     client_factory: JiraClientFactoryDep,
+    oauth_client: JiraOAuthClientDep,
 ) -> TicketImportResult:
-    preview = _jira_preview(room_id, payload, repository, actor, cipher, client_factory)
+    preview = _jira_preview(
+        room_id, payload, repository, actor, cipher, client_factory, oauth_client
+    )
     if preview.errors:
         raise HTTPException(
             status_code=422,
@@ -205,11 +349,13 @@ def list_jira_assignees(
     actor: PrincipalDep,
     cipher: TokenCipherDep,
     client_factory: JiraClientFactoryDep,
+    oauth_client: JiraOAuthClientDep,
     q: str = "",
 ) -> list[JiraUser]:
     connection = repository.get_jira_connection(room_id, actor)
     ticket = _jira_ticket(room_id, ticket_id, connection.site_url, repository, actor)
-    with _client(connection, cipher, client_factory) as jira:
+    _, jira = _client(connection, cipher, client_factory, oauth_client, repository, actor)
+    with jira:
         return jira.assignable_users(ticket.issue_key or "", q.strip())
 
 
@@ -257,6 +403,7 @@ def writeback_jira(
     actor: PrincipalDep,
     cipher: TokenCipherDep,
     client_factory: JiraClientFactoryDep,
+    oauth_client: JiraOAuthClientDep,
 ) -> JiraWritebackResult:
     room = repository.get_room(room_id, actor)
     if room.owner_id != actor.id:
@@ -269,7 +416,8 @@ def writeback_jira(
     tickets = _jira_tickets_for_writeback(room_id, repository, actor, connection)
 
     items: list[JiraWritebackItem] = []
-    with _client(connection, cipher, client_factory) as jira:
+    _, jira = _client(connection, cipher, client_factory, oauth_client, repository, actor)
+    with jira:
         for ticket in tickets:
             try:
                 jira.write_issue(

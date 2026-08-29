@@ -10,10 +10,12 @@ from fastapi.testclient import TestClient
 from app.auth import Principal, get_current_principal
 from app.config import Settings
 from app.jira_client import TokenCipher, generate_encryption_key
+from app.jira_oauth import JiraOAuthResource, JiraOAuthTokens
 from app.main import (
     app,
     create_app,
     get_jira_client_factory,
+    get_jira_oauth_client,
     get_repository,
     get_token_cipher,
 )
@@ -102,6 +104,44 @@ class FakeJiraClient:
         self.writes.append(
             (issue_key, story_points_field_id, final_estimate, assignee_account_id)
         )
+
+
+class FakeOAuthClient:
+    def __init__(self) -> None:
+        self.refreshed: list[str] = []
+
+    def authorization_url(self, state: str) -> str:
+        return f"https://auth.atlassian.test/authorize?state={state}"
+
+    def exchange_code(self, code: str) -> JiraOAuthTokens:
+        assert code == "authorization-code"
+        return JiraOAuthTokens(
+            access_token="oauth-access",
+            refresh_token="oauth-refresh",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    def accessible_resources(self, access_token: str) -> list[JiraOAuthResource]:
+        assert access_token == "oauth-access"
+        return [
+            JiraOAuthResource(
+                id="cloud-123",
+                url="https://example.atlassian.net",
+                name="Example Jira",
+            )
+        ]
+
+    def refresh(self, refresh_token: str) -> JiraOAuthTokens:
+        self.refreshed.append(refresh_token)
+        return JiraOAuthTokens(
+            access_token="oauth-access-rotated",
+            refresh_token="oauth-refresh-rotated",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    @staticmethod
+    def jira_api_url(cloud_id: str) -> str:
+        return f"https://api.atlassian.test/ex/jira/{cloud_id}"
 
 
 def test_health_readiness_and_request_ids(caplog) -> None:
@@ -526,6 +566,70 @@ def test_room_scoped_jira_jql_import_assignee_and_writeback() -> None:
         app.dependency_overrides[get_current_principal] = lambda: OUTSIDER
         assert client.get(f"/api/rooms/{room_id}/jira/connection").status_code == 403
         assert client.post(f"/api/rooms/{room_id}/jira/writeback").status_code == 403
+    finally:
+        clear_overrides()
+
+
+def test_room_scoped_jira_oauth_connects_and_keeps_tokens_server_side() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    jira = FakeJiraClient()
+    oauth = FakeOAuthClient()
+    cipher = TokenCipher(generate_encryption_key())
+    app.dependency_overrides[get_token_cipher] = lambda: cipher
+    app.dependency_overrides[get_jira_oauth_client] = lambda: oauth
+    app.dependency_overrides[get_jira_client_factory] = lambda: (
+        lambda _site, _email, _credential: jira
+    )
+    room_id = client.post("/api/rooms", json={"name": "OAuth planning"}).json()["id"]
+    try:
+        authorization = client.post(
+            f"/api/rooms/{room_id}/jira/oauth/authorize",
+            json={"site_url": "https://example.atlassian.net"},
+        )
+        assert authorization.status_code == 200
+        state = authorization.json()["authorization_url"].split("state=", 1)[1]
+
+        app.dependency_overrides[get_current_principal] = lambda: OUTSIDER
+        denied_callback = client.post(
+            "/api/jira/oauth/callback",
+            json={"code": "authorization-code", "state": state},
+        )
+        assert denied_callback.status_code == 403
+        app.dependency_overrides[get_current_principal] = lambda: OWNER
+
+        callback = client.post(
+            "/api/jira/oauth/callback",
+            json={"code": "authorization-code", "state": state},
+        )
+        assert callback.status_code == 200
+        assert callback.json()["room_id"] == room_id
+        assert callback.json()["connection"]["oauth"] is True
+        assert "access" not in callback.text.casefold()
+        assert "refresh" not in callback.text.casefold()
+
+        stored = repository.jira_connections[UUID(room_id)]
+        assert stored.auth_method == "oauth"
+        assert stored.encrypted_api_token is None
+        assert cipher.decrypt(stored.encrypted_access_token or "") == "oauth-access"
+        assert cipher.decrypt(stored.encrypted_refresh_token or "") == "oauth-refresh"
+
+        repository.jira_connections[UUID(room_id)] = stored.model_copy(
+            update={"token_expires_at": datetime.now(UTC) - timedelta(minutes=1)}
+        )
+        preview = client.post(
+            f"/api/rooms/{room_id}/jira/search",
+            json={
+                "jql": "project = PAY ORDER BY Rank ASC",
+                "duplicate_behavior": "error",
+            },
+        )
+        assert preview.status_code == 200
+        assert oauth.refreshed == ["oauth-refresh"]
+        rotated = repository.jira_connections[UUID(room_id)]
+        assert cipher.decrypt(rotated.encrypted_refresh_token or "") == (
+            "oauth-refresh-rotated"
+        )
     finally:
         clear_overrides()
 
