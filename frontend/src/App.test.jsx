@@ -507,6 +507,53 @@ describe('vote reveal and final estimate', () => {
     await waitFor(() => expect(apiMock.setActiveTicket).toHaveBeenCalledWith(roomId, nextTicket.id))
   })
 
+  it('closes voting and presents the summary after pricing the final ticket', async () => {
+    const finalRoom = { ...room, active_ticket_id: ticket.id, ticket_count: 1 }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(finalRoom)
+    apiMock.tickets.mockResolvedValue([ticket])
+    apiMock.members.mockResolvedValue(roster)
+    apiMock.revealVotes.mockResolvedValue(revealed)
+    apiMock.setFinalEstimate.mockResolvedValue({
+      ...ticket, vote_state: 'revealed', final_estimate: '5',
+    })
+    apiMock.setActiveTicket.mockResolvedValue({
+      ...finalRoom, active_ticket_id: null, sized_count: 1, total_points: 5,
+    })
+
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reveal votes' }))
+    fireEvent.click(await screen.findByRole('button', { name: '5' }))
+    fireEvent.click(screen.getByRole('button', { name: /Save & finish/ }))
+
+    await waitFor(() => expect(apiMock.setFinalEstimate).toHaveBeenCalledWith(
+      roomId, ticket.id, '5',
+    ))
+    await waitFor(() => expect(apiMock.setActiveTicket).toHaveBeenCalledWith(roomId, null))
+    expect(await screen.findByRole('heading', { name: 'Pricing summary' })).toBeVisible()
+    expect(screen.getByText('100%')).toBeVisible()
+  })
+
+  it('keeps the summary open when Realtime refreshes the same active ticket', async () => {
+    const revealedTicket = { ...ticket, vote_state: 'revealed', final_estimate: '5' }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets.mockResolvedValue([revealedTicket, nextTicket])
+    apiMock.members.mockResolvedValue(roster)
+    apiMock.voteResults.mockResolvedValue({ ...revealed, final_estimate: '5' })
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Wallet alert' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Summary' }))
+    expect(await screen.findByRole('heading', { name: 'Pricing summary' })).toBeVisible()
+
+    await act(async () => realtimeMock.callback())
+
+    expect(screen.getByRole('heading', { name: 'Pricing summary' })).toBeVisible()
+  })
+
   it('renders automatically revealed results after the final vote response', async () => {
     window.history.replaceState({}, '', `/rooms/${roomId}`)
     apiMock.room.mockResolvedValue(room)
@@ -560,7 +607,7 @@ describe('room export and deletion', () => {
       .mockReturnValueOnce(room.name)
 
     render(<App />)
-    expect(await screen.findByRole('heading', { name: 'Backlog' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Pricing summary' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Room settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Delete room' }))
     expect(apiMock.deleteRoom).not.toHaveBeenCalled()
