@@ -1,24 +1,40 @@
+import csv
+import io
+import re
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .auth import Principal, PrincipalDep
 from .config import Settings, get_settings
+from .jira import parse_jira_import
 from .models import (
-    EstimateUpdate,
+    ActiveTicketUpdate,
+    FinalEstimateUpdate,
+    JiraImportPreview,
+    JiraImportRequest,
     Room,
     RoomCreate,
     RoomJoin,
     RoomMember,
     RoomUpdate,
     Ticket,
-    TicketImport,
+    TicketCreate,
+    TicketImportResult,
+    TicketOrder,
+    TicketUpdate,
+    VoteReceipt,
+    VoteResults,
+    VoteSubmission,
 )
+from .observability import RequestContextMiddleware, event_logger, log_event
 from .repositories import (
+    ConflictError,
     ForbiddenError,
     InMemoryRepository,
     NotFoundError,
@@ -49,6 +65,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=[
+            "Content-Disposition",
+            "Retry-After",
+            "X-RateLimit-Limit",
+            "X-Request-ID",
+        ],
+    )
+    app.add_middleware(
+        RequestContextMiddleware,
+        join_limit=config.rate_limit_join_per_minute,
+        import_limit=config.rate_limit_import_per_minute,
+        vote_limit=config.rate_limit_vote_per_minute,
     )
 
     @app.exception_handler(NotFoundError)
@@ -59,9 +87,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def forbidden_handler(_: Request, error: ForbiddenError) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(error)})
 
+    @app.exception_handler(ConflictError)
+    async def conflict_handler(_: Request, error: ConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(error)})
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health/ready")
+    def readiness(request: Request, repository: RepositoryDep) -> dict[str, str]:
+        try:
+            repository.healthcheck()
+        except Exception:  # noqa: BLE001 -- readiness is the dependency boundary
+            log_event(
+                event_logger,
+                "readiness_failed",
+                request_id=request.state.request_id,
+                dependency="supabase",
+            )
+            raise HTTPException(status_code=503, detail="A required service is unavailable")
+        return {"status": "ready"}
 
     @app.get("/api/me", response_model=Principal)
     def current_user(actor: PrincipalDep) -> Principal:
@@ -92,6 +138,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Room:
         return repository.update_room(room_id, payload, actor)
 
+    @app.patch("/api/rooms/{room_id}/active-ticket", response_model=Room)
+    def set_active_ticket(
+        room_id: UUID,
+        payload: ActiveTicketUpdate,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> Room:
+        return repository.set_active_ticket(room_id, payload.ticket_id, actor)
+
+    @app.get("/api/rooms/{room_id}/export")
+    def export_room(
+        room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
+    ) -> Response:
+        room, tickets = repository.export_room(room_id, actor)
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\r\n")
+        writer.writerow(
+            [
+                "Jira key",
+                "Summary",
+                "Issue type",
+                "Description",
+                "Original story points",
+                "Final Tickettalks estimate",
+            ]
+        )
+        for ticket in tickets:
+            writer.writerow(
+                [
+                    ticket.issue_key or "",
+                    ticket.summary,
+                    ticket.issue_type,
+                    ticket.description,
+                    "" if ticket.story_points is None else ticket.story_points,
+                    ticket.final_estimate or "",
+                ]
+            )
+        slug = re.sub(r"[^a-z0-9]+", "-", room.name.casefold()).strip("-") or "room"
+        filename = f"{slug}-{datetime.now(UTC).date().isoformat()}.csv"
+        return Response(
+            output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.delete("/api/rooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_room(
+        room_id: UUID,
+        request: Request,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> None:
+        repository.delete_room(room_id, actor)
+        log_event(
+            event_logger,
+            "room_deleted",
+            request_id=request.state.request_id,
+            room_id=room_id,
+            owner_id=actor.id,
+        )
+
     @app.post("/api/rooms/{room_id}/join", response_model=RoomMember)
     def join_room(
         room_id: UUID,
@@ -113,32 +220,161 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> RoomMember:
         return repository.touch_presence(room_id, actor)
 
+    @app.put(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/vote",
+        response_model=VoteReceipt,
+    )
+    def submit_vote(
+        room_id: UUID,
+        ticket_id: UUID,
+        payload: VoteSubmission,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteReceipt:
+        return repository.submit_vote(room_id, ticket_id, payload.value, actor)
+
+    @app.get(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/votes",
+        response_model=VoteResults,
+    )
+    def get_vote_results(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteResults:
+        return repository.get_vote_results(room_id, ticket_id, actor)
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/reveal",
+        response_model=VoteResults,
+    )
+    def reveal_votes(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteResults:
+        return repository.reveal_votes(room_id, ticket_id, actor)
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/revote",
+        response_model=VoteResults,
+    )
+    def restart_vote(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> VoteResults:
+        return repository.restart_vote(room_id, ticket_id, actor)
+
+    @app.put(
+        "/api/rooms/{room_id}/tickets/{ticket_id}/final-estimate",
+        response_model=Ticket,
+    )
+    def set_final_estimate(
+        room_id: UUID,
+        ticket_id: UUID,
+        payload: FinalEstimateUpdate,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> Ticket:
+        return repository.set_final_estimate(room_id, ticket_id, payload.value, actor)
+
     @app.get("/api/rooms/{room_id}/tickets", response_model=list[Ticket])
     def list_tickets(
         room_id: UUID, repository: RepositoryDep, actor: PrincipalDep
     ) -> list[Ticket]:
         return repository.list_tickets(room_id, actor)
 
-    @app.post("/api/rooms/{room_id}/tickets/import", response_model=list[Ticket])
-    def import_tickets(
+    def import_preview(
         room_id: UUID,
-        payload: TicketImport,
+        payload: JiraImportRequest,
+        repository: Repository,
+        actor: Principal,
+    ) -> JiraImportPreview:
+        room = repository.get_room(room_id, actor)
+        if room.owner_id != actor.id:
+            raise ForbiddenError("Only the facilitator can change the backlog")
+        return parse_jira_import(
+            payload.content,
+            payload.duplicate_behavior,
+            repository.list_tickets(room_id, actor),
+        )
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets/import/preview",
+        response_model=JiraImportPreview,
+    )
+    def preview_ticket_import(
+        room_id: UUID,
+        payload: JiraImportRequest,
         repository: RepositoryDep,
         actor: PrincipalDep,
-    ) -> list[Ticket]:
-        return repository.import_tickets(room_id, payload.tickets, actor)
+    ) -> JiraImportPreview:
+        return import_preview(room_id, payload, repository, actor)
 
-    @app.patch("/api/tickets/{ticket_id}/estimate", response_model=Ticket)
-    def update_estimate(
-        ticket_id: UUID,
-        payload: EstimateUpdate,
+    @app.post(
+        "/api/rooms/{room_id}/tickets/import", response_model=TicketImportResult
+    )
+    def import_tickets(
+        room_id: UUID,
+        payload: JiraImportRequest,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> TicketImportResult:
+        preview = import_preview(room_id, payload, repository, actor)
+        if preview.errors:
+            raise HTTPException(
+                status_code=422,
+                detail=[error.model_dump() for error in preview.errors],
+            )
+        return repository.import_tickets(room_id, preview.rows, actor)
+
+    @app.post(
+        "/api/rooms/{room_id}/tickets",
+        response_model=Ticket,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_ticket(
+        room_id: UUID,
+        payload: TicketCreate,
         repository: RepositoryDep,
         actor: PrincipalDep,
     ) -> Ticket:
-        ticket = repository.update_estimate(ticket_id, payload.story_points, actor)
-        if not ticket:
-            raise HTTPException(status_code=404, detail="Ticket not found")
-        return ticket
+        return repository.create_ticket(room_id, payload, actor)
+
+    @app.patch("/api/rooms/{room_id}/tickets/{ticket_id}", response_model=Ticket)
+    def update_ticket(
+        room_id: UUID,
+        ticket_id: UUID,
+        payload: TicketUpdate,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> Ticket:
+        return repository.update_ticket(room_id, ticket_id, payload, actor)
+
+    @app.delete(
+        "/api/rooms/{room_id}/tickets/{ticket_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_ticket(
+        room_id: UUID,
+        ticket_id: UUID,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> None:
+        repository.delete_ticket(room_id, ticket_id, actor)
+
+    @app.put("/api/rooms/{room_id}/tickets/order", response_model=list[Ticket])
+    def reorder_tickets(
+        room_id: UUID,
+        payload: TicketOrder,
+        repository: RepositoryDep,
+        actor: PrincipalDep,
+    ) -> list[Ticket]:
+        return repository.reorder_tickets(room_id, payload.ticket_ids, actor)
 
     return app
 

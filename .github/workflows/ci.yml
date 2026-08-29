@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend lint and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+        working-directory: backend
+      - run: uv run ruff check .
+        working-directory: backend
+      - run: uv run pytest
+        working-directory: backend
+
+  frontend:
+    name: Frontend lint, tests, and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
+      - run: npm run test:coverage
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+  database:
+    name: Supabase RLS and two-client flow
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.114.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+      - run: supabase start
+      - run: supabase db reset
+      - run: supabase test db
+      - name: Export local integration credentials
+        shell: bash
+        run: |
+          eval "$(supabase status -o env)"
+          echo "SUPABASE_INTEGRATION_URL=$API_URL" >> "$GITHUB_ENV"
+          echo "SUPABASE_INTEGRATION_ANON_KEY=$ANON_KEY" >> "$GITHUB_ENV"
+          echo "SUPABASE_INTEGRATION_SECRET_KEY=$SERVICE_ROLE_KEY" >> "$GITHUB_ENV"
+      - run: uv sync --frozen
+        working-directory: backend
+      - run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=85
+        working-directory: backend
+
+  containers:
+    name: Production container build
+    runs-on: ubuntu-latest
+    env:
+      VITE_API_URL: https://api.tickettalk.io
+      VITE_SUPABASE_URL: https://example.supabase.co
+      VITE_SUPABASE_ANON_KEY: ci-publishable-key
+      FRONTEND_ORIGIN: https://tickettalk.io
+      SUPABASE_URL: https://example.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ci-service-key
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose build

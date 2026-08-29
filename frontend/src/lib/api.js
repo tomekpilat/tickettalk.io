@@ -21,9 +21,27 @@ async function request(path, options) {
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}))
+    const detail = Array.isArray(payload.detail)
+      ? payload.detail.map((item) => item.message || item.msg || String(item)).join(' ')
+      : payload.detail
+    throw new ApiError(detail || `Request failed with ${response.status}`, response.status)
+  }
+  if (response.status === 204) return null
+  return response.json()
+}
+
+async function download(path) {
+  const token = await getAccessToken()
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
     throw new ApiError(payload.detail || `Request failed with ${response.status}`, response.status)
   }
-  return response.json()
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'tickettalks-export.csv'
+  return { blob: await response.blob(), filename }
 }
 
 export const api = {
@@ -39,11 +57,41 @@ export const api = {
   updateRoom: (roomId, room) => request(`/api/rooms/${roomId}`, {
     method: 'PATCH', body: JSON.stringify(room),
   }),
-  tickets: (roomId) => request(`/api/rooms/${roomId}/tickets`),
-  importTickets: (roomId, tickets) => request(`/api/rooms/${roomId}/tickets/import`, {
-    method: 'POST', body: JSON.stringify({ tickets }),
+  downloadRoomExport: (roomId) => download(`/api/rooms/${roomId}/export`),
+  deleteRoom: (roomId) => request(`/api/rooms/${roomId}`, { method: 'DELETE' }),
+  setActiveTicket: (roomId, ticketId) => request(`/api/rooms/${roomId}/active-ticket`, {
+    method: 'PATCH', body: JSON.stringify({ ticket_id: ticketId }),
   }),
-  estimate: (ticketId, storyPoints) => request(`/api/tickets/${ticketId}/estimate`, {
-    method: 'PATCH', body: JSON.stringify({ story_points: storyPoints }),
+  submitVote: (roomId, ticketId, value) => request(`/api/rooms/${roomId}/tickets/${ticketId}/vote`, {
+    method: 'PUT', body: JSON.stringify({ value }),
+  }),
+  voteResults: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}/votes`),
+  revealVotes: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}/reveal`, {
+    method: 'POST',
+  }),
+  restartVote: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}/revote`, {
+    method: 'POST',
+  }),
+  setFinalEstimate: (roomId, ticketId, value) => request(`/api/rooms/${roomId}/tickets/${ticketId}/final-estimate`, {
+    method: 'PUT', body: JSON.stringify({ value }),
+  }),
+  tickets: (roomId) => request(`/api/rooms/${roomId}/tickets`),
+  previewImport: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import/preview`, {
+    method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),
+  }),
+  importTickets: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import`, {
+    method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),
+  }),
+  createTicket: (roomId, ticket) => request(`/api/rooms/${roomId}/tickets`, {
+    method: 'POST', body: JSON.stringify(ticket),
+  }),
+  updateTicket: (roomId, ticketId, ticket) => request(`/api/rooms/${roomId}/tickets/${ticketId}`, {
+    method: 'PATCH', body: JSON.stringify(ticket),
+  }),
+  deleteTicket: (roomId, ticketId) => request(`/api/rooms/${roomId}/tickets/${ticketId}`, {
+    method: 'DELETE',
+  }),
+  reorderTickets: (roomId, ticketIds) => request(`/api/rooms/${roomId}/tickets/order`, {
+    method: 'PUT', body: JSON.stringify({ ticket_ids: ticketIds }),
   }),
 }

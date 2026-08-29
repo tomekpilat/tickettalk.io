@@ -30,7 +30,7 @@ export function subscribeToRoom(roomId, onChange) {
       event: '*', schema: 'public', table: 'tickets', filter: `room_id=eq.${roomId}`,
     }, onChange)
     .on('postgres_changes', {
-      event: '*', schema: 'public', table: 'votes', filter: `room_id=eq.${roomId}`,
+      event: '*', schema: 'public', table: 'vote_statuses', filter: `room_id=eq.${roomId}`,
     }, onChange)
     .subscribe()
   return () => { supabase.removeChannel(channel) }

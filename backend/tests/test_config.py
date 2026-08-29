@@ -20,3 +20,8 @@ def test_development_authenticator_accepts_only_its_explicit_token() -> None:
 
     assert authenticator.authenticate("local-only-token") is not None
     assert authenticator.authenticate("anything-else") is None
+
+
+def test_rate_limits_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        Settings(rate_limit_vote_per_minute=0, _env_file=None)
