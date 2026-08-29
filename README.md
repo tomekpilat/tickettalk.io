@@ -77,6 +77,8 @@ FastAPI validates the Supabase JWT and always scopes reads and writes to the aut
 
 ## Verification
 
+The fast unit suites use the in-memory repository. The CI database job additionally starts a clean local Supabase stack, runs every migration and pgTAP assertion, and reruns the backend suite with the real Supabase repository. That integration run enforces at least 85% backend line coverage; the frontend enforces statement, branch, function, and line thresholds in `vite.config.js`.
+
 ```bash
 cd backend
 uv run ruff check .
@@ -87,6 +89,8 @@ npm run lint
 npm run test:coverage
 npm run build
 ```
+
+To reproduce the complete database gate locally, run `supabase start`, export the integration values shown by `supabase status -o env` as described by `.github/workflows/ci.yml`, and then run the backend coverage command with `--cov-fail-under=85`.
 
 ## Production configuration
 

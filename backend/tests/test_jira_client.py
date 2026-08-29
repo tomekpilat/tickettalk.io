@@ -2,6 +2,7 @@ import json
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 
 from app.jira_client import JiraClient, JiraError, TokenCipher, generate_encryption_key
 from app.models import JiraConnectionCreate
@@ -33,6 +34,11 @@ def test_connection_restricts_hosts_and_token_cipher_round_trips() -> None:
                 email="user@example.com",
                 api_token="secret",
             )
+
+    with pytest.raises(ValueError, match="valid Fernet key"):
+        TokenCipher("invalid")
+    with pytest.raises(JiraError, match="cannot be decrypted"):
+        cipher.decrypt(Fernet.generate_key().decode())
 
 
 def test_client_reads_paginated_jql_adf_assignees_and_writes_fields() -> None:
@@ -117,10 +123,56 @@ def test_client_returns_safe_jira_errors() -> None:
     transport = httpx.MockTransport(
         lambda _: httpx.Response(400, json={"errorMessages": ["Invalid JQL"]})
     )
-    with JiraClient(
-        "https://example.atlassian.net",
-        "user@example.com",
-        "secret",
-        transport=transport,
-    ) as jira, pytest.raises(JiraError, match="Invalid JQL"):
+    with (
+        JiraClient(
+            "https://example.atlassian.net",
+            "user@example.com",
+            "secret",
+            transport=transport,
+        ) as jira,
+        pytest.raises(JiraError, match="Invalid JQL"),
+    ):
         jira.search("invalid", None)
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "message"),
+    [
+        (401, {}, "rejected the email or API token"),
+        (403, {}, "does not have permission"),
+        (429, {"Retry-After": "12"}, "Retry after 12 seconds"),
+        (500, {}, "status 500"),
+    ],
+)
+def test_client_normalizes_auth_rate_limit_and_server_errors(
+    status: int, headers: dict[str, str], message: str
+) -> None:
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(status, headers=headers, text="internal details")
+    )
+    with (
+        JiraClient(
+            "https://example.atlassian.net",
+            "user@example.com",
+            "secret",
+            transport=transport,
+        ) as jira,
+        pytest.raises(JiraError, match=message),
+    ):
+        jira.myself()
+
+
+def test_client_normalizes_network_errors() -> None:
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("private network detail", request=request)
+
+    with (
+        JiraClient(
+            "https://example.atlassian.net",
+            "user@example.com",
+            "secret",
+            transport=httpx.MockTransport(unavailable),
+        ) as jira,
+        pytest.raises(JiraError, match="could not be reached"),
+    ):
+        jira.myself()

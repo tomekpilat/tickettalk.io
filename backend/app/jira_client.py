@@ -30,7 +30,9 @@ class TokenCipher:
         try:
             return self.fernet.decrypt(encrypted_token.encode()).decode()
         except InvalidToken as error:
-            raise JiraError("The stored Jira credential cannot be decrypted; reconnect Jira") from error
+            raise JiraError(
+                "The stored Jira credential cannot be decrypted; reconnect Jira"
+            ) from error
 
 
 def generate_encryption_key() -> str:
@@ -125,7 +127,7 @@ class JiraClient:
             name = str(field.get("name") or "")
             custom = str((field.get("schema") or {}).get("custom") or "")
             normalized = name.casefold().replace("_", " ")
-            if "story point" in normalized or custom.endswith(":float") and "point" in normalized:
+            if "story point" in normalized or (custom.endswith(":float") and "point" in normalized):
                 candidates.append(JiraField(id=str(field["id"]), name=name))
         return sorted(candidates, key=lambda item: item.name.casefold())
 
@@ -152,7 +154,9 @@ class JiraClient:
             page = self._request("POST", "/rest/api/3/search/jql", json=body).json()
             issues.extend(page.get("issues") or [])
             next_page_token = page.get("nextPageToken")
-            if len(issues) > MAX_JIRA_TICKETS or next_page_token and len(issues) >= MAX_JIRA_TICKETS:
+            if len(issues) > MAX_JIRA_TICKETS or (
+                next_page_token and len(issues) >= MAX_JIRA_TICKETS
+            ):
                 raise JiraError("The JQL query returns more than 500 tickets; narrow the query")
             if not next_page_token:
                 break
@@ -212,9 +216,7 @@ class JiraClient:
                 "fields": {
                     story_points_field_id: final_estimate,
                     "assignee": (
-                        {"accountId": assignee_account_id}
-                        if assignee_account_id
-                        else None
+                        {"accountId": assignee_account_id} if assignee_account_id else None
                     ),
                 }
             },

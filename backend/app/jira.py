@@ -40,6 +40,73 @@ def _delimiter(content: str) -> str:
     return "\t" if first_line.count("\t") > first_line.count(",") else ","
 
 
+def _parse_row(
+    raw_row: dict[str | None, str | list[str] | None],
+    header_map: dict[str, str | None],
+    row_number: int,
+) -> tuple[JiraImportRow | None, JiraImportError | None]:
+    values = {
+        mapped: str(raw_row.get(header) or "").strip()
+        for header, mapped in header_map.items()
+        if mapped
+    }
+    points_value = values.get("story_points", "")
+    try:
+        story_points = float(points_value) if points_value else None
+    except ValueError:
+        return None, _error(
+            row_number,
+            "Story Points",
+            f'"{points_value}" is not a number.',
+            "Use a number such as 3, 5, or 8, or leave the cell empty.",
+        )
+
+    try:
+        return JiraImportRow(
+            row_number=row_number,
+            issue_key=values.get("issue_key") or None,
+            summary=values.get("summary", ""),
+            issue_type=values.get("issue_type") or "Story",
+            description=values.get("description", ""),
+            story_points=story_points,
+        ), None
+    except ValidationError as error:
+        first_error = error.errors()[0]
+        field = str(first_error.get("loc", ["row"])[-1]).replace("_", " ").title()
+        return None, _error(
+            row_number,
+            field,
+            first_error["msg"],
+            f"Correct the {field.lower()} value on row {row_number}.",
+        )
+
+
+def _append_with_duplicate_policy(
+    preview: JiraImportPreview,
+    row: JiraImportRow,
+    existing: Ticket | None,
+    duplicate_behavior: DuplicateBehavior,
+) -> None:
+    if existing and duplicate_behavior == "error":
+        preview.errors.append(
+            _error(
+                row.row_number,
+                "Issue key",
+                f"{row.issue_key} already exists in this room.",
+                "Choose Skip existing or Replace existing before importing.",
+            )
+        )
+        return
+    if existing:
+        row.action = "skip" if duplicate_behavior == "skip" else "replace"
+        row.existing_ticket_id = existing.id
+    if row.action == "skip":
+        preview.skipped_count += 1
+    else:
+        preview.saved_count += 1
+    preview.rows.append(row)
+
+
 def parse_jira_import(
     content: str,
     duplicate_behavior: DuplicateBehavior,
@@ -53,13 +120,9 @@ def parse_jira_import(
         return preview
 
     try:
-        reader = csv.DictReader(
-            StringIO(content.lstrip("\ufeff")), delimiter=_delimiter(content)
-        )
+        reader = csv.DictReader(StringIO(content.lstrip("\ufeff")), delimiter=_delimiter(content))
         raw_headers = reader.fieldnames or []
-        header_map = {
-            header: HEADER_ALIASES.get(_header_key(header)) for header in raw_headers
-        }
+        header_map = {header: HEADER_ALIASES.get(_header_key(header)) for header in raw_headers}
         if "summary" not in header_map.values():
             preview.errors.append(
                 _error(
@@ -72,9 +135,7 @@ def parse_jira_import(
             return preview
 
         existing_by_key = {
-            ticket.issue_key.casefold(): ticket
-            for ticket in existing_tickets
-            if ticket.issue_key
+            ticket.issue_key.casefold(): ticket for ticket in existing_tickets if ticket.issue_key
         }
         seen_keys: set[str] = set()
 
@@ -104,48 +165,11 @@ def parse_jira_import(
                 )
                 break
 
-            values = {
-                mapped: (raw_row.get(header) or "").strip()
-                for header, mapped in header_map.items()
-                if mapped
-            }
-            points_value = values.get("story_points", "")
-            story_points = None
-            if points_value:
-                try:
-                    story_points = float(points_value)
-                except ValueError:
-                    preview.errors.append(
-                        _error(
-                            row_number,
-                            "Story Points",
-                            f'"{points_value}" is not a number.',
-                            "Use a number such as 3, 5, or 8, or leave the cell empty.",
-                        )
-                    )
-                    continue
-
-            try:
-                row = JiraImportRow(
-                    row_number=row_number,
-                    issue_key=values.get("issue_key") or None,
-                    summary=values.get("summary", ""),
-                    issue_type=values.get("issue_type") or "Story",
-                    description=values.get("description", ""),
-                    story_points=story_points,
-                )
-            except ValidationError as error:
-                first_error = error.errors()[0]
-                field = str(first_error.get("loc", ["row"])[-1]).replace("_", " ").title()
-                preview.errors.append(
-                    _error(
-                        row_number,
-                        field,
-                        first_error["msg"],
-                        f"Correct the {field.lower()} value on row {row_number}.",
-                    )
-                )
+            row, row_error = _parse_row(raw_row, header_map, row_number)
+            if row_error:
+                preview.errors.append(row_error)
                 continue
+            assert row is not None
 
             normalized_key = row.issue_key.casefold() if row.issue_key else None
             if normalized_key and normalized_key in seen_keys:
@@ -162,27 +186,7 @@ def parse_jira_import(
                 seen_keys.add(normalized_key)
 
             existing = existing_by_key.get(normalized_key) if normalized_key else None
-            if existing and duplicate_behavior == "error":
-                preview.errors.append(
-                    _error(
-                        row_number,
-                        "Issue key",
-                        f"{row.issue_key} already exists in this room.",
-                        "Choose Skip existing or Replace existing before importing.",
-                    )
-                )
-                continue
-            if existing and duplicate_behavior == "skip":
-                row.action = "skip"
-                row.existing_ticket_id = existing.id
-                preview.skipped_count += 1
-            elif existing:
-                row.action = "replace"
-                row.existing_ticket_id = existing.id
-                preview.saved_count += 1
-            else:
-                preview.saved_count += 1
-            preview.rows.append(row)
+            _append_with_duplicate_policy(preview, row, existing, duplicate_behavior)
     except csv.Error as error:
         preview.errors.append(
             _error(0, "file", f"The file could not be parsed: {error}", "Check its CSV quoting.")
@@ -197,31 +201,9 @@ def preview_jira_rows(
 ) -> JiraImportPreview:
     preview = JiraImportPreview(source_count=len(rows))
     existing_by_key = {
-        ticket.issue_key.casefold(): ticket
-        for ticket in existing_tickets
-        if ticket.issue_key
+        ticket.issue_key.casefold(): ticket for ticket in existing_tickets if ticket.issue_key
     }
     for row in rows:
         existing = existing_by_key.get(row.issue_key.casefold()) if row.issue_key else None
-        if existing and duplicate_behavior == "error":
-            preview.errors.append(
-                _error(
-                    row.row_number,
-                    "Issue key",
-                    f"{row.issue_key} already exists in this room.",
-                    "Choose Skip existing or Replace existing before importing.",
-                )
-            )
-            continue
-        if existing and duplicate_behavior == "skip":
-            row.action = "skip"
-            row.existing_ticket_id = existing.id
-            preview.skipped_count += 1
-        elif existing:
-            row.action = "replace"
-            row.existing_ticket_id = existing.id
-            preview.saved_count += 1
-        else:
-            preview.saved_count += 1
-        preview.rows.append(row)
+        _append_with_duplicate_policy(preview, row, existing, duplicate_behavior)
     return preview

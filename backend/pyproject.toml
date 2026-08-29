@@ -22,15 +22,17 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = ["--ignore-glob=* 2.py"]
 
 [tool.coverage.run]
 source = ["app"]
 omit = ["app/* 2.py"]
 
 [tool.coverage.report]
-fail_under = 75
+fail_under = 78
 show_missing = true
 skip_covered = true
 
 [tool.ruff]
 line-length = 100
+exclude = ["* 2.py"]
