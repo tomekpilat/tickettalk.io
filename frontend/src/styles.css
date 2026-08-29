@@ -106,6 +106,23 @@ button.ticket-row:hover { background:#faf6ed; }
 .auth-panel label,.settings-panel label { display:flex; flex-direction:column; gap:8px; font:500 9px 'JetBrains Mono'; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); }
 .auth-panel input,.settings-panel input,.settings-panel select { width:100%; border:1px solid var(--line); background:var(--paper); padding:11px 12px; font:400 14px 'Instrument Sans'; text-transform:none; letter-spacing:0; }
 .auth-message { color:var(--green)!important; font-size:12px!important; }
+.auth-message.form-error { color:#b4442a!important; }
+.privacy-note { color:var(--muted); font-size:11px; line-height:1.5; text-align:center; }
+.participant-roster { width:100%; padding:22px; margin:0 0 32px; }
+.participant-roster.compact { width:min(900px,100%); padding:13px 0; margin:0 auto 28px; border-block:1px solid var(--line); }
+.roster-heading { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; font:500 9px 'JetBrains Mono'; text-transform:uppercase; letter-spacing:.13em; color:var(--muted); }
+.roster-heading small { color:var(--green); }
+.roster-list { display:flex; flex-wrap:wrap; gap:10px 22px; }
+.roster-person { min-width:170px; display:grid; grid-template-columns:32px 1fr 8px; align-items:center; gap:9px; }
+.roster-person>span:nth-child(2) { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.roster-person strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:600; }
+.roster-person small { font:400 8px 'JetBrains Mono'; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+.roster-avatar { width:32px; height:32px; display:grid; place-items:center; border-radius:50%; border:1px solid var(--line); background:var(--white); color:var(--muted); font:500 8px 'JetBrains Mono'; }
+.roster-avatar.online { border-color:var(--ink); background:var(--ink); color:var(--white); }
+.member-status { width:7px; height:7px; border-radius:50%; background:var(--green); }
+.member-status.voted { box-shadow:0 0 0 3px rgba(15,157,118,.14); }
+.member-status.offline { background:#b8af9e; }
+.member-lobby .page-heading { margin-bottom:30px; }
 .modal-backdrop { position:fixed; inset:0; z-index:20; background:rgba(27,24,21,.34); display:grid; place-items:center; padding:20px; }
 .settings-panel { width:min(460px,100%); padding:28px; display:flex; flex-direction:column; gap:20px; }
 .settings-panel .panel-label button { border:0; background:transparent; color:var(--muted); font-size:20px; }

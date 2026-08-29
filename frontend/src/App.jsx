@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { sendMagicLink, signOut, useAuth } from './lib/auth.js'
+import { sendMagicLink, signInAsMember, signOut, useAuth } from './lib/auth.js'
 import { api } from './lib/api.js'
 import { isRoomLikePath, pushPath, roomIdFromPath, roomPath } from './lib/routing.js'
 import { subscribeToRoom } from './lib/supabase.js'
@@ -35,8 +35,19 @@ function initials(name) {
 
 function App() {
   const auth = useAuth()
+  const [joiningRoomId, setJoiningRoomId] = useState(null)
+  const sharedRoomId = roomIdFromPath()
   if (auth.loading) return <CenteredState eyebrow="Session" title="Checking your session…" />
   if (auth.error) return <CenteredState eyebrow="Configuration" title="The app needs attention." detail={auth.error} />
+  if ((!auth.user || joiningRoomId === sharedRoomId) && sharedRoomId) return (
+    <JoinRoom
+      roomId={sharedRoomId}
+      hasAnonymousSession={Boolean(auth.user?.isAnonymous)}
+      onJoining={() => setJoiningRoomId(sharedRoomId)}
+      onJoined={() => setJoiningRoomId(null)}
+    />
+  )
+  if (!auth.user && isRoomLikePath()) return <CenteredState eyebrow="Room access" title="Room link not recognized." detail="Check the URL and ask the facilitator for a new link." />
   if (!auth.user) return <SignIn />
   return <Workspace user={auth.user} />
 }
@@ -45,6 +56,7 @@ function Workspace({ user }) {
   const [view, setView] = useState('rooms')
   const [rooms, setRooms] = useState([])
   const [room, setRoom] = useState(null)
+  const [members, setMembers] = useState([])
   const [tickets, setTickets] = useState([])
   const [ticketIndex, setTicketIndex] = useState(0)
   const [selectedVote, setSelectedVote] = useState(null)
@@ -76,24 +88,33 @@ function Workspace({ user }) {
     }
   }, [])
 
+  const refreshMembers = useCallback(async (roomId) => {
+    const nextMembers = await api.members(roomId)
+    setMembers(nextMembers)
+    return nextMembers
+  }, [])
+
   const openRoom = useCallback(async (roomId, options = {}) => {
     setLoading(true)
     setRouteError(null)
     try {
-      const [nextRoom, nextTickets] = await Promise.all([
+      const [nextRoom, nextTickets, nextMembers] = await Promise.all([
         api.room(roomId),
         api.tickets(roomId),
+        api.members(roomId),
       ])
       setRoom(nextRoom)
       setTickets(nextTickets)
+      setMembers(nextMembers)
       setTicketIndex(Math.max(0, nextTickets.findIndex((ticket) => ticket.id === nextRoom.active_ticket_id)))
       setView(nextTickets.length ? 'backlog' : 'import')
       setApiOnline(true)
       if (options.push !== false) pushPath(roomPath(nextRoom.id))
     } catch (error) {
       const title = error.status === 403 ? 'This room is private.' : 'Room not found.'
-      setRouteError({ title, detail: error.message })
+      setRouteError({ title, detail: error.message, status: error.status })
       setView('route-error')
+      setMembers([])
       setApiOnline(error.status !== undefined)
     } finally {
       setLoading(false)
@@ -105,6 +126,7 @@ function Workspace({ user }) {
     setView('rooms')
     setRoom(null)
     setTickets([])
+    setMembers([])
     setRouteError(null)
     setSettingsOpen(false)
     refreshRooms()
@@ -134,14 +156,28 @@ function Workspace({ user }) {
     if (!room?.id) return undefined
     return subscribeToRoom(room.id, async () => {
       try {
-        const [freshRoom, freshTickets] = await Promise.all([
-          api.room(room.id), api.tickets(room.id),
+        const [freshRoom, freshTickets, freshMembers] = await Promise.all([
+          api.room(room.id), api.tickets(room.id), api.members(room.id),
         ])
         setRoom(freshRoom)
         setTickets(freshTickets)
+        setMembers(freshMembers)
       } catch { /* the next user action will surface connectivity or authorization */ }
     })
   }, [room?.id])
+
+  useEffect(() => {
+    if (!room?.id) return undefined
+    const heartbeat = async () => {
+      try {
+        await api.touchPresence(room.id)
+        await refreshMembers(room.id)
+      } catch { /* presence retries on the next heartbeat */ }
+    }
+    heartbeat()
+    const interval = window.setInterval(heartbeat, 15000)
+    return () => window.clearInterval(interval)
+  }, [refreshMembers, room?.id])
 
   useEffect(() => {
     if (!toast) return undefined
@@ -155,6 +191,7 @@ function Workspace({ user }) {
     : 0
   const nextUnsizedIndex = tickets.findIndex((item) => item.story_points == null)
   const votingScale = scales[room?.scale] || scales.fibonacci
+  const isFacilitator = Boolean(room && room.owner_id === user.id)
 
   const parsedTickets = useMemo(() => {
     const rows = importText.trim().split('\n').filter(Boolean)
@@ -275,7 +312,7 @@ function Workspace({ user }) {
     }
   }
 
-  const roomActions = room ? (
+  const roomActions = room && isFacilitator ? (
     <div className="room-actions">
       <button className="secondary" onClick={shareRoom}>Copy room link</button>
       <button className="secondary" onClick={openSettings}>Room settings</button>
@@ -283,6 +320,15 @@ function Workspace({ user }) {
   ) : null
 
   if (loading) return <CenteredState eyebrow="Room" title="Loading the room…" />
+
+  if (view === 'route-error' && routeError?.status === 403 && user.isAnonymous) return (
+    <JoinRoom
+      roomId={roomIdFromPath()}
+      hasAnonymousSession
+      defaultName={user.displayName}
+      onJoined={() => openRoom(roomIdFromPath(), { push: false })}
+    />
+  )
 
   if (view === 'route-error') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
@@ -320,11 +366,22 @@ function Workspace({ user }) {
     </Shell>
   )
 
+  if (view === 'import' && !isFacilitator) return (
+    <Shell status={apiOnline} user={user} onRooms={goToRooms}>
+      <main className="page member-lobby">
+        <div className="page-toolbar"><Back onClick={goToRooms}>Rooms</Back></div>
+        <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>You’re in.</h1><p>The facilitator is preparing the tickets. Keep this tab open and the room will update automatically.</p></div></section>
+        <ParticipantRoster members={members} currentUserId={user.id} />
+      </main>
+    </Shell>
+  )
+
   if (view === 'import') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
       <main className="page import-page">
         <div className="page-toolbar"><Back onClick={goToRooms}>Rooms</Back>{roomActions}</div>
         <div className="split-heading"><div><p className="eyebrow">{room.name} / import</p><h1>Bring in the tickets.</h1></div><p>Paste a Jira export. We’ll keep the key, type and story context attached to every estimate.</p></div>
+        <ParticipantRoster members={members} currentUserId={user.id} compact />
         {formError && <p className="form-error inline-error">{formError}</p>}
         <section className="import-grid">
           <div className="panel import-editor"><div className="panel-label"><span>CSV input</span><small>01</small></div><textarea value={importText} onChange={(event) => setImportText(event.target.value)} /><div className="editor-actions"><label className="secondary file-picker">Choose file<input type="file" accept=".csv,.tsv,.txt" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setImportText(String(reader.result || '')); reader.readAsText(file) }} /></label><span>CSV, TSV or plain text</span></div></div>
@@ -340,7 +397,8 @@ function Workspace({ user }) {
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
       <main className="page backlog-page">
         <div className="page-toolbar"><Back onClick={goToRooms}>Rooms</Back>{roomActions}</div>
-        <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Backlog</h1><p>{completion}% priced · {tickets.filter((ticket) => ticket.story_points == null).length} tickets need a conversation</p></div><button className="primary" disabled={nextUnsizedIndex < 0} onClick={() => openTicket(nextUnsizedIndex)}>Price next ticket <span>→</span></button></section>
+        <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Backlog</h1><p>{completion}% priced · {tickets.filter((ticket) => ticket.story_points == null).length} tickets need a conversation</p></div>{isFacilitator && <button className="primary" disabled={nextUnsizedIndex < 0} onClick={() => openTicket(nextUnsizedIndex)}>Price next ticket <span>→</span></button>}</section>
+        <ParticipantRoster members={members} currentUserId={user.id} compact />
         <div className="ticket-table panel"><div className="ticket-row ticket-head"><span>Key</span><span>Summary</span><span>Type</span><span>Points</span></div>{tickets.map((item, index) => <button className="ticket-row" key={item.id} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>)}</div>
       </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
@@ -350,7 +408,7 @@ function Workspace({ user }) {
 
   if (view === 'summary') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
-      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView('session')}>Session</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div><button className="secondary" onClick={exportCsv}>Export CSV ↓</button></section><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (item.story_points || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.story_points != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>)}</div></main>
+      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView('session')}>Session</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (item.story_points || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.story_points != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.story_points == null ? 'empty-points' : ''}>{item.story_points ?? '—'}</b></button>)}</div></main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
@@ -358,8 +416,9 @@ function Workspace({ user }) {
 
   return (
     <div className="session-shell">
-      <header className="session-top"><Back onClick={() => setView('backlog')}>Backlog</Back><div><strong>{room.name}</strong><span>{ticketIndex + 1} of {tickets.length}</span></div><div className="session-actions"><button onClick={shareRoom}>Share</button><button onClick={() => setShowDetail((value) => !value)}>{showDetail ? 'Hide' : 'Ticket'} detail</button><button onClick={() => setView('summary')}>Summary</button></div></header>
+      <header className="session-top"><Back onClick={() => setView('backlog')}>Backlog</Back><div><strong>{room.name}</strong><span>{ticketIndex + 1} of {tickets.length}</span></div><div className="session-actions">{isFacilitator && <button onClick={shareRoom}>Share</button>}<button onClick={() => setShowDetail((value) => !value)}>{showDetail ? 'Hide' : 'Ticket'} detail</button><button onClick={() => setView('summary')}>Summary</button></div></header>
       <main className="session-main">
+        <ParticipantRoster members={members} currentUserId={user.id} compact />
         <section className="story-copy"><p className="eyebrow">{current?.issue_key} · {current?.issue_type}</p><h1>{current?.summary}</h1>{showDetail && <p className="description">{current?.description || 'No ticket description supplied.'}</p>}</section>
         <section className="vote-area"><p className="micro-label">Choose your estimate</p><div className="cards">{votingScale.map((value) => <button key={value} className={selectedVote === value ? 'selected' : ''} onClick={() => { setSelectedVote(value); setRevealed(false) }}>{value}</button>)}</div></section>
         {!revealed ? <section className="waiting"><div className="avatars">{team.map((person, index) => <span className={index === 0 && selectedVote ? 'voted' : index > 0 ? 'voted' : ''} key={person.initials}>{person.initials}</span>)}</div><p>{selectedVote ? '4 of 4 voted' : '3 of 4 voted · waiting for you'}</p><button className="reveal" disabled={!selectedVote} onClick={() => setRevealed(true)}>Reveal cards</button></section> : <Results selected={selectedVote} onEstimate={saveEstimate} onNext={nextTicket} onRevote={() => setRevealed(false)} />}
@@ -368,6 +427,48 @@ function Workspace({ user }) {
       {toast && <Toast>{toast}</Toast>}
     </div>
   )
+}
+
+function JoinRoom({ roomId, hasAnonymousSession = false, defaultName = '', onJoining, onJoined }) {
+  const [displayName, setDisplayName] = useState(defaultName)
+  const [message, setMessage] = useState('')
+  const [joining, setJoining] = useState(false)
+  const [joined, setJoined] = useState(false)
+
+  const submit = async (event) => {
+    event.preventDefault()
+    const normalizedName = displayName.trim().replace(/\s+/g, ' ')
+    if (!normalizedName) {
+      setMessage('Enter your name to join.')
+      return
+    }
+    setJoining(true)
+    setMessage('')
+    onJoining?.()
+    try {
+      if (!hasAnonymousSession) await signInAsMember(normalizedName)
+      await api.joinRoom(roomId, normalizedName)
+      setJoined(true)
+      onJoined?.()
+    } catch (error) {
+      setMessage(error.status === 403 || error.status === 404
+        ? 'This room is unavailable. Ask the facilitator for a new link.'
+        : error.message)
+    } finally {
+      setJoining(false)
+    }
+  }
+
+  if (joined) return <CenteredState eyebrow="Room access" title="You’re in." detail="Loading the pricing room…" />
+
+  return <div className="auth-page"><Logo /><form className="auth-panel panel" onSubmit={submit}><p className="eyebrow">Shared pricing room</p><h1>Join the conversation.</h1><p>Enter the name your teammates will recognize. No account or password is required.</p><label>Your name<input autoFocus required maxLength={80} value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="e.g. Maya" /></label>{message && <p className="auth-message form-error">{message}</p>}<button className="primary wide" disabled={joining}>{joining ? 'Joining room…' : 'Join room'} <span>→</span></button><small className="privacy-note">Your browser keeps a private session so refreshing will not add you twice.</small></form></div>
+}
+
+function ParticipantRoster({ members, currentUserId, compact = false }) {
+  return <section className={compact ? 'participant-roster compact' : 'participant-roster panel'} aria-label="Participants"><div className="roster-heading"><span>Participants</span><small>{members.filter((member) => member.is_online).length} online · {members.length} joined</small></div><div className="roster-list">{members.map((member) => {
+    const status = member.has_voted ? 'Voted' : member.is_online ? 'Joined' : 'Disconnected'
+    return <div className="roster-person" key={member.user_id}><span className={member.is_online ? 'roster-avatar online' : 'roster-avatar'}>{initials(member.display_name)}</span><span><strong>{member.user_id === currentUserId ? `${member.display_name} (you)` : member.display_name}</strong><small>{member.role === 'facilitator' ? 'Facilitator' : status}</small></span><i className={member.has_voted ? 'member-status voted' : member.is_online ? 'member-status' : 'member-status offline'} aria-label={status} /></div>
+  })}</div></section>
 }
 
 function SignIn() {

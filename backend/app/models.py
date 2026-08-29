@@ -69,6 +69,29 @@ class Room(RoomCreate):
     total_points: float = 0
 
 
+class RoomJoin(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Enter your name to join")
+        return normalized
+
+
+class RoomMember(BaseModel):
+    room_id: UUID
+    user_id: UUID
+    role: Literal["facilitator", "member"]
+    display_name: str
+    joined_at: datetime
+    last_seen_at: datetime
+    is_online: bool = False
+    has_voted: bool = False
+
+
 class TicketImport(BaseModel):
     tickets: list[TicketCreate]
 

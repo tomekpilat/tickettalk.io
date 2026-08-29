@@ -31,6 +31,11 @@ export const api = {
   rooms: () => request('/api/rooms'),
   room: (roomId) => request(`/api/rooms/${roomId}`),
   createRoom: (room) => request('/api/rooms', { method: 'POST', body: JSON.stringify(room) }),
+  joinRoom: (roomId, displayName) => request(`/api/rooms/${roomId}/join`, {
+    method: 'POST', body: JSON.stringify({ display_name: displayName }),
+  }),
+  members: (roomId) => request(`/api/rooms/${roomId}/members`),
+  touchPresence: (roomId) => request(`/api/rooms/${roomId}/presence`, { method: 'POST' }),
   updateRoom: (roomId, room) => request(`/api/rooms/${roomId}`, {
     method: 'PATCH', body: JSON.stringify(room),
   }),
