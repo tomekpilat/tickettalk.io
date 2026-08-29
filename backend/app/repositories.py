@@ -1204,6 +1204,7 @@ class SupabaseRepository:
                     skipped_count += 1
                     continue
                 values = row.model_dump(
+                    mode="json",
                     exclude={"row_number", "action", "existing_ticket_id"}
                 )
                 if row.action == "replace" and row.existing_ticket_id:
