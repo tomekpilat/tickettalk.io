@@ -13,6 +13,9 @@ export function JiraConnectForm({ draft, setDraft, connecting, onConnect }) {
 
 export function JiraImportPanel({
   connection,
+  issueKey,
+  setIssueKey,
+  addingIssue,
   jql,
   setJql,
   duplicateBehavior,
@@ -22,6 +25,7 @@ export function JiraImportPanel({
   importing,
   onSelectField,
   onDisconnect,
+  onAddIssue,
   onSearch,
   onImport,
 }) {
@@ -34,9 +38,17 @@ export function JiraImportPanel({
         )}
         <button className="secondary" onClick={onDisconnect}>Disconnect</button>
       </div>
+      <form className="panel jira-single-import" onSubmit={onAddIssue}>
+        <div className="panel-label"><span>Add one Jira ticket</span><small>No JQL needed</small></div>
+        <div className="jira-single-controls">
+          <label>Jira issue key<input aria-label="Jira issue key" placeholder="PAY-123" maxLength={80} value={issueKey} onChange={(event) => setIssueKey(event.target.value)} autoCapitalize="characters" autoComplete="off" spellCheck="false" /></label>
+          <button className="primary" disabled={addingIssue || !issueKey.trim()}>{addingIssue ? 'Adding ticket…' : 'Add to room'} <span>→</span></button>
+        </div>
+        <p>Enter the complete issue key. The ticket will use the duplicate setting below.</p>
+      </form>
       <section className="import-grid">
         <div className="panel import-editor">
-          <div className="panel-label"><span>JQL query</span><small>01</small></div>
+          <div className="panel-label"><span>Import multiple with JQL</span><small>01</small></div>
           <textarea aria-label="JQL query" value={jql} onChange={(event) => setJql(event.target.value)} />
           <label className="duplicate-choice">Existing Jira keys<select value={duplicateBehavior} onChange={(event) => setDuplicateBehavior(event.target.value)}><option value="error">Ask me to decide</option><option value="skip">Skip existing</option><option value="replace">Refresh existing</option></select></label>
           <div className="editor-actions"><button className="primary" disabled={searching || !jql.trim()} onClick={onSearch}>{searching ? 'Running JQL…' : 'Preview tickets'}</button><span>Maximum 500 tickets</span></div>

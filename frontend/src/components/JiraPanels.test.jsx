@@ -30,6 +30,9 @@ describe('Jira panels', () => {
         story_points_field_id: 'customfield_1',
         story_points_fields: [{ id: 'customfield_1', name: 'Story Points' }, { id: 'customfield_2', name: 'Estimate' }],
       }}
+      issueKey=""
+      setIssueKey={vi.fn()}
+      addingIssue={false}
       jql="project = PAY"
       setJql={vi.fn()}
       duplicateBehavior="error"
@@ -39,6 +42,7 @@ describe('Jira panels', () => {
       importing={false}
       onSelectField={onSelectField}
       onDisconnect={onDisconnect}
+      onAddIssue={vi.fn((event) => event.preventDefault())}
       onSearch={onSearch}
       onImport={vi.fn()}
     />)
@@ -52,6 +56,42 @@ describe('Jira panels', () => {
     expect(onDisconnect).toHaveBeenCalled()
     expect(onSearch).toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Import 0 tickets/ })).toBeDisabled()
+  })
+
+  it('delegates a single Jira issue key without requiring JQL', () => {
+    const setIssueKey = vi.fn()
+    const onAddIssue = vi.fn((event) => event.preventDefault())
+    render(<JiraImportPanel
+      connection={{
+        site_url: 'https://example.atlassian.net',
+        jira_display_name: 'Maya',
+        story_points_fields: [],
+      }}
+      issueKey="PAY-123"
+      setIssueKey={setIssueKey}
+      addingIssue={false}
+      jql="project = PAY"
+      setJql={vi.fn()}
+      duplicateBehavior="error"
+      setDuplicateBehavior={vi.fn()}
+      preview={null}
+      searching={false}
+      importing={false}
+      onSelectField={vi.fn()}
+      onDisconnect={vi.fn()}
+      onAddIssue={onAddIssue}
+      onSearch={vi.fn()}
+      onImport={vi.fn()}
+    />)
+
+    fireEvent.change(screen.getByLabelText('Jira issue key'), {
+      target: { value: 'PAY-456' },
+    })
+    fireEvent.submit(screen.getByRole('button', { name: /Add to room/ }).closest('form'))
+
+    expect(setIssueKey).toHaveBeenCalledWith('PAY-456')
+    expect(onAddIssue).toHaveBeenCalled()
+    expect(screen.getByText('No JQL needed')).toBeVisible()
   })
 
   it('surfaces ticket write-back failures and blocks numeric write-back for T-shirt rooms', () => {
