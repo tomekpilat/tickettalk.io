@@ -2,13 +2,16 @@ import csv
 import io
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from postgrest.exceptions import APIError
 from supabase import create_client
 
-from app.auth import SupabaseAuthenticator, get_authenticator
+from app.auth import Principal, SupabaseAuthenticator, get_authenticator
 from app.main import app, get_repository
+from app.models import JiraConnectionSecret
 from app.repositories import SupabaseRepository
 
 SUPABASE_URL = os.getenv("SUPABASE_INTEGRATION_URL")
@@ -52,6 +55,35 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
             headers=owner_headers,
         ).json()
         room_id = room["id"]
+        repository = SupabaseRepository(SUPABASE_URL or "", SUPABASE_SECRET_KEY or "")
+        actor = Principal(
+            id=owner.id,
+            display_name="Integration owner",
+            is_anonymous=True,
+        )
+        now = datetime.now(UTC)
+        repository.save_jira_connection(
+            JiraConnectionSecret(
+                room_id=room_id,
+                owner_id=owner.id,
+                site_url="https://example.atlassian.net",
+                email="owner@example.com",
+                encrypted_api_token="encrypted-test-token",
+                jira_account_id="jira-integration-owner",
+                jira_display_name="Integration owner",
+                story_points_field_id="customfield_10016",
+                created_at=now,
+                updated_at=now,
+            ),
+            actor,
+        )
+        assert repository.get_jira_connection(room_id, actor).encrypted_api_token == (
+            "encrypted-test-token"
+        )
+        with pytest.raises(APIError):
+            owner_auth.table("jira_room_connections").select("*").eq(
+                "room_id", room_id
+            ).execute()
         content = "Issue key,Summary,Story Points\nINT-1,Imported ticket,8\n"
         preview = client.post(
             f"/api/rooms/{room_id}/tickets/import/preview",
@@ -304,6 +336,9 @@ def test_real_supabase_clients_persist_and_protect_the_backlog() -> None:
             "room_id", room_id
         ).execute().data == []
         assert service.table("votes").select("room_id").eq(
+            "room_id", room_id
+        ).execute().data == []
+        assert service.table("jira_room_connections").select("room_id").eq(
             "room_id", room_id
         ).execute().data == []
 

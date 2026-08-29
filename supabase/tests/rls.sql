@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(11);
+select plan(12);
 
 insert into auth.users (id, email, raw_user_meta_data, is_anonymous)
 values
@@ -110,6 +110,11 @@ select is(
 select ok(
   (select reloptions @> array['security_invoker=true'] from pg_class where relname = 'room_rollups'),
   'the room rollup view preserves RLS'
+);
+
+select ok(
+  not has_table_privilege('authenticated', 'public.jira_room_connections', 'select'),
+  'browser clients cannot read encrypted Jira credentials'
 );
 
 select * from finish();

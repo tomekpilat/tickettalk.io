@@ -4,7 +4,7 @@ This document describes the current product architecture and data flows implemen
 
 ## Product model
 
-tickettalk is a registration-free planning-poker application. A facilitator creates a private room, imports or adds tickets, selects the active ticket, collects hidden estimates, reveals the votes, records a final estimate, and exports the completed pricing summary. Participants join from the room's UUID URL and receive live session updates.
+tickettalk is a registration-free planning-poker application. A facilitator creates a private room, imports or adds tickets, selects the active ticket, collects hidden estimates, reveals the votes, records a final estimate, and exports or writes back the completed pricing summary. Participants join from the room's UUID URL and receive live session updates.
 
 The main product invariants are:
 
@@ -26,6 +26,7 @@ flowchart LR
     Auth["Supabase Auth"]
     Realtime["Supabase Realtime"]
     DB["Supabase Postgres<br/>RLS + functions + triggers"]
+    Jira["Jira Cloud REST API"]
 
     User -->|"browser interaction"| Web
     Web -->|"anonymous sign-in / refresh"| Auth
@@ -33,6 +34,7 @@ flowchart LR
     Web -->|"RLS-filtered change subscriptions"| Realtime
     API -->|"validate JWT"| Auth
     API -->|"service-role queries and RPCs"| DB
+    API -->|"room owner's API token<br/>JQL + issue updates"| Jira
     Realtime -->|"publication changes"| DB
 ```
 
@@ -44,7 +46,8 @@ The browser has two Supabase-facing responsibilities: anonymous authentication a
 | --- | --- | --- |
 | React + Vite SPA | Routing, room UI, voting UI, session persistence, API calls, Realtime invalidation | Runs in an untrusted browser. Contains only the public Supabase URL and publishable anon key. |
 | Nginx web container | Serves immutable SPA assets, returns `index.html` for client routes, exposes `/healthz` | Stateless. |
-| FastAPI | Validates JWTs, normalizes inputs, applies product authorization, rate-limits sensitive endpoints, orchestrates repository operations, creates CSV exports | Public API boundary. Holds the Supabase service-role key. |
+| FastAPI | Validates JWTs, normalizes inputs, applies product authorization, rate-limits sensitive endpoints, orchestrates repository operations, creates CSV exports | Public API boundary. Holds the Supabase service-role key and Jira credential-encryption key. |
+| Jira adapter | Validates room-scoped Jira credentials, paginates JQL results, converts ADF descriptions, discovers Story Points fields, lists assignable users, and writes final issue fields | Server-side outbound boundary. Decrypted API tokens exist only for the duration of a Jira request. |
 | Repository layer | Maps product operations to Supabase queries/RPCs; provides an in-memory implementation for local development and unit tests | The production implementation uses a service-role client, so it must enforce actor and room scope before data access. |
 | Supabase Auth | Creates and refreshes anonymous identities and validates browser access tokens | `auth.users` is the identity source of truth. |
 | Supabase Postgres | Stores rooms, memberships, tickets, votes, presence, and safe vote status; runs RLS, triggers, views, and transactional functions | Durable source of truth. |
@@ -106,6 +109,7 @@ The API returns only rooms owned by the current browser on the home screen. Join
 | Change room settings or backlog | Yes | No | No |
 | Select active ticket, reveal, re-vote, set final estimate | Yes | No | No |
 | Export or delete room | Yes | No | No |
+| Connect Jira, run JQL, choose final assignees, write back | Yes | No | No |
 
 ### Defense in depth
 
@@ -124,6 +128,7 @@ erDiagram
     PROFILES ||--o{ ROOM_MEMBERS : participates
     ROOMS ||--o{ ROOM_MEMBERS : contains
     ROOMS ||--o{ TICKETS : contains
+    ROOMS ||--o| JIRA_ROOM_CONNECTIONS : "optionally connects"
     TICKETS ||--o{ VOTES : receives
     PROFILES ||--o{ VOTES : submits
     VOTES ||--|| VOTE_STATUSES : "safe status mirror"
@@ -161,6 +166,18 @@ erDiagram
         text vote_state
         int vote_round
         text final_estimate
+        text jira_issue_id
+        text final_assignee_account_id
+        timestamptz jira_writeback_at
+    }
+    JIRA_ROOM_CONNECTIONS {
+        uuid room_id PK,FK
+        uuid owner_id FK
+        text site_url
+        text email
+        text encrypted_api_token
+        text jira_account_id
+        text story_points_field_id
     }
     VOTES {
         uuid room_id FK
@@ -248,6 +265,45 @@ Jira issue keys are unique per room when present. Manual tickets may omit an iss
 
 Import persistence currently performs row operations sequentially rather than in one database transaction. A mid-import infrastructure failure can therefore leave an incomplete batch; retry behavior must respect issue-key duplicate handling.
 
+### Jira JQL import and write-back
+
+Jira access is optional and scoped to one room. Only the facilitator can submit or use a credential. FastAPI validates the supplied Jira Cloud URL, authenticates with the email and API token, discovers candidate Story Points fields, encrypts the token with `JIRA_ENCRYPTION_KEY`, and stores only ciphertext in `jira_room_connections`. The table grants no access to `anon` or `authenticated`; only the API service role can read it after checking room ownership.
+
+```mermaid
+sequenceDiagram
+    participant F as Facilitator browser
+    participant API as FastAPI
+    participant DB as Postgres
+    participant J as Jira Cloud
+
+    F->>API: Connect(site URL, email, API token)
+    API->>J: GET myself + fields
+    J-->>API: Jira identity + Story Points fields
+    API->>DB: encrypt and upsert room credential
+    API-->>F: connection metadata only
+
+    F->>API: Preview JQL
+    API->>DB: verify room owner + decrypt credential
+    API->>J: POST search/jql (paginated, selected fields)
+    J-->>API: up to 500 issues
+    API-->>F: normalized import/skip/replace preview
+    F->>API: Confirm JQL import
+    API->>J: re-run JQL
+    API->>DB: insert or refresh ticket snapshots
+
+    F->>API: Write final results
+    API->>DB: require owner, numeric estimates, Jira links
+    loop each Jira ticket
+        API->>J: PUT issue Story Points + assignee accountId
+        API->>DB: record success timestamp or safe error
+    end
+    API-->>F: per-ticket write-back result
+```
+
+JQL saving deliberately re-runs the query instead of trusting browser preview rows. Imported tickets store Jira's immutable issue ID, mutable issue key, source estimate, source assignee, and source update timestamp. The existing duplicate policy remains keyed by the normalized issue key. Replacing a snapshot does not directly change vote rows or final estimates.
+
+The current write-back is synchronous and sequential. It is explicit rather than automatic: the summary lets the facilitator choose a final assignable Jira user, then confirms one batch. Each issue update sends the numeric final estimate to the discovered Story Points field and the final assignee as a Jira `accountId`. Failures are isolated and returned per ticket. T-shirt rooms cannot write to numeric Story Points and remain export-only.
+
 ### Voting, reveal, and final estimate
 
 ```mermaid
@@ -322,6 +378,7 @@ flowchart TB
     WebContainer["web container<br/>Nginx :80"]
     APIContainer["api container<br/>Uvicorn :8000"]
     Supabase["Managed Supabase<br/>Auth + Postgres + Realtime"]
+    JiraCloud["Jira Cloud REST API"]
 
     Internet -->|"https://tickettalk.io"| Coolify
     Internet -->|"https://api.tickettalk.io"| Coolify
@@ -329,6 +386,7 @@ flowchart TB
     Coolify --> APIContainer
     WebContainer -. "browser receives SPA" .-> Internet
     APIContainer -->|"outbound HTTPS, service role"| Supabase
+    APIContainer -->|"outbound HTTPS, per-room credential"| JiraCloud
     Internet -->|"browser Auth + Realtime HTTPS/WSS"| Supabase
 ```
 
@@ -344,6 +402,7 @@ Production configuration is split by trust level:
 | `FRONTEND_ORIGIN` | API runtime | Configuration |
 | `SUPABASE_URL` | API runtime | Configuration |
 | `SUPABASE_SERVICE_ROLE_KEY` | API runtime only | Secret |
+| `JIRA_ENCRYPTION_KEY` | API runtime only | Secret; encrypts room Jira tokens |
 | `RATE_LIMIT_*_PER_MINUTE` | API runtime | Configuration |
 
 `/health` proves the API process is alive. `/health/ready` also checks the repository/Supabase dependency. Nginx exposes `/healthz` for the web container.
@@ -384,6 +443,7 @@ Database schema changes must be additive migrations in `supabase/migrations`. Do
 | Product models and validation | `backend/app/models.py` |
 | Production and in-memory repositories | `backend/app/repositories.py` |
 | Jira import parsing | `backend/app/jira.py` |
+| Jira REST client and token encryption | `backend/app/jira_client.py` |
 | Request IDs, logging, and rate limits | `backend/app/observability.py` |
 | Database schema, functions, triggers, and RLS | `supabase/migrations/` |
 | RLS regression tests | `supabase/tests/rls.sql` |
@@ -397,6 +457,9 @@ Database schema changes must be additive migrations in `supabase/migrations`. Do
 - Room UUIDs appear in API paths and can therefore appear in proxy and application access logs; log access and retention must respect their capability-like sensitivity.
 - Completion/closure is derived rather than modeled as an explicit room state.
 - Import persistence is not atomic across the entire batch.
+- Jira JQL import and write-back run synchronously and sequentially. Large rooms may need durable background jobs in a later release.
+- Jira credentials are room-scoped but bound to the facilitator's browser identity. Losing that anonymous identity removes access to manage or disconnect the connection.
+- Rotating `JIRA_ENCRYPTION_KEY` without a dual-key migration requires reconnecting every Jira-enabled room.
 - Presence and automatic-reveal eligibility use a fixed 45-second activity window.
 - In-memory rate limits do not coordinate across horizontally scaled API replicas.
 - The API's service-role database access makes repository authorization review a critical security requirement.

@@ -8,6 +8,8 @@ from supabase import Client, create_client
 
 from .auth import DEVELOPMENT_USER_ID, Principal
 from .models import (
+    JiraConnection,
+    JiraConnectionSecret,
     JiraImportRow,
     RevealedVote,
     Room,
@@ -130,6 +132,28 @@ class Repository(Protocol):
     def import_tickets(
         self, room_id: UUID, rows: list[JiraImportRow], actor: Principal
     ) -> TicketImportResult: ...
+    def get_jira_connection(
+        self, room_id: UUID, actor: Principal
+    ) -> JiraConnectionSecret: ...
+    def save_jira_connection(
+        self, connection: JiraConnectionSecret, actor: Principal
+    ) -> JiraConnection: ...
+    def delete_jira_connection(self, room_id: UUID, actor: Principal) -> None: ...
+    def set_final_assignee(
+        self,
+        room_id: UUID,
+        ticket_id: UUID,
+        account_id: str | None,
+        display_name: str | None,
+        actor: Principal,
+    ) -> Ticket: ...
+    def record_jira_writeback(
+        self,
+        room_id: UUID,
+        ticket_id: UUID,
+        error: str | None,
+        actor: Principal,
+    ) -> Ticket: ...
 
 
 class InMemoryRepository:
@@ -138,6 +162,7 @@ class InMemoryRepository:
         self.tickets: dict[UUID, Ticket] = {}
         self.members: dict[UUID, dict[UUID, RoomMember]] = {}
         self.votes: dict[tuple[UUID, UUID], Vote] = {}
+        self.jira_connections: dict[UUID, JiraConnectionSecret] = {}
         if not seed:
             return
         room_id = UUID("10000000-0000-4000-8000-000000000001")
@@ -445,6 +470,7 @@ class InMemoryRepository:
             if ticket.room_id != room_id
         }
         self.members.pop(room_id, None)
+        self.jira_connections.pop(room_id, None)
         del self.rooms[room_id]
 
     def list_tickets(self, room_id: UUID, actor: Principal) -> list[Ticket]:
@@ -585,6 +611,62 @@ class InMemoryRepository:
             replaced_count=replaced_count,
             skipped_count=skipped_count,
         )
+
+    def get_jira_connection(
+        self, room_id: UUID, actor: Principal
+    ) -> JiraConnectionSecret:
+        self._require_owner(room_id, actor)
+        connection = self.jira_connections.get(room_id)
+        if not connection:
+            raise NotFoundError("Connect Jira to this room first")
+        return deepcopy(connection)
+
+    def save_jira_connection(
+        self, connection: JiraConnectionSecret, actor: Principal
+    ) -> JiraConnection:
+        self._require_owner(connection.room_id, actor)
+        self.jira_connections[connection.room_id] = deepcopy(connection)
+        return JiraConnection.model_validate(
+            connection.model_dump(exclude={"encrypted_api_token"})
+        )
+
+    def delete_jira_connection(self, room_id: UUID, actor: Principal) -> None:
+        self._require_owner(room_id, actor)
+        if room_id not in self.jira_connections:
+            raise NotFoundError("Jira is not connected to this room")
+        del self.jira_connections[room_id]
+
+    def set_final_assignee(
+        self,
+        room_id: UUID,
+        ticket_id: UUID,
+        account_id: str | None,
+        display_name: str | None,
+        actor: Principal,
+    ) -> Ticket:
+        self._require_owner(room_id, actor)
+        ticket = self.tickets.get(ticket_id)
+        if not ticket or ticket.room_id != room_id or not ticket.jira_issue_id:
+            raise NotFoundError("Jira ticket not found")
+        ticket.final_assignee_account_id = account_id
+        ticket.final_assignee_display_name = display_name
+        return deepcopy(ticket)
+
+    def record_jira_writeback(
+        self,
+        room_id: UUID,
+        ticket_id: UUID,
+        error: str | None,
+        actor: Principal,
+    ) -> Ticket:
+        self._require_owner(room_id, actor)
+        ticket = self.tickets.get(ticket_id)
+        if not ticket or ticket.room_id != room_id:
+            raise NotFoundError("Ticket not found")
+        ticket.jira_writeback_error = error
+        ticket.jira_writeback_at = None if error else datetime.now(UTC)
+        return deepcopy(ticket)
+
 
 class SupabaseRepository:
     def __init__(self, url: str, key: str) -> None:
@@ -1155,3 +1237,101 @@ class SupabaseRepository:
             replaced_count=replaced_count,
             skipped_count=skipped_count,
         )
+
+    def get_jira_connection(
+        self, room_id: UUID, actor: Principal
+    ) -> JiraConnectionSecret:
+        self._require_owner_room(room_id, actor)
+        result = (
+            self.client.table("jira_room_connections")
+            .select("*")
+            .eq("room_id", str(room_id))
+            .limit(1)
+            .execute()
+        )
+        row = self._first(result.data)
+        if not row:
+            raise NotFoundError("Connect Jira to this room first")
+        return JiraConnectionSecret.model_validate(row)
+
+    def save_jira_connection(
+        self, connection: JiraConnectionSecret, actor: Principal
+    ) -> JiraConnection:
+        self._require_owner_room(connection.room_id, actor)
+        values = connection.model_dump(
+            mode="json", exclude={"created_at", "updated_at"}
+        )
+        result = self.client.table("jira_room_connections").upsert(
+            values, on_conflict="room_id"
+        ).execute()
+        row = self._first(result.data)
+        if not row:
+            raise RepositoryError("Jira connection returned no data")
+        return JiraConnection.model_validate(
+            {**row, "story_points_fields": connection.story_points_fields}
+        )
+
+    def delete_jira_connection(self, room_id: UUID, actor: Principal) -> None:
+        self._require_owner_room(room_id, actor)
+        result = (
+            self.client.table("jira_room_connections")
+            .delete()
+            .eq("room_id", str(room_id))
+            .eq("owner_id", str(actor.id))
+            .execute()
+        )
+        if not self._first(result.data):
+            raise NotFoundError("Jira is not connected to this room")
+
+    def set_final_assignee(
+        self,
+        room_id: UUID,
+        ticket_id: UUID,
+        account_id: str | None,
+        display_name: str | None,
+        actor: Principal,
+    ) -> Ticket:
+        self._require_owner_room(room_id, actor)
+        if not self._ticket_in_room(room_id, ticket_id).jira_issue_id:
+            raise NotFoundError("Jira ticket not found")
+        result = (
+            self.client.table("tickets")
+            .update(
+                {
+                    "final_assignee_account_id": account_id,
+                    "final_assignee_display_name": display_name,
+                }
+            )
+            .eq("room_id", str(room_id))
+            .eq("id", str(ticket_id))
+            .execute()
+        )
+        row = self._first(result.data)
+        if not row:
+            raise NotFoundError("Jira ticket not found")
+        return Ticket.model_validate(row)
+
+    def record_jira_writeback(
+        self,
+        room_id: UUID,
+        ticket_id: UUID,
+        error: str | None,
+        actor: Principal,
+    ) -> Ticket:
+        self._require_owner_room(room_id, actor)
+        result = (
+            self.client.table("tickets")
+            .update(
+                {
+                    "jira_writeback_at": None if error else datetime.now(UTC).isoformat(),
+                    "jira_writeback_error": error,
+                }
+            )
+            .eq("room_id", str(room_id))
+            .eq("id", str(ticket_id))
+            .execute()
+        )
+        row = self._first(result.data)
+        if not row:
+            raise NotFoundError("Ticket not found")
+        return Ticket.model_validate(row)

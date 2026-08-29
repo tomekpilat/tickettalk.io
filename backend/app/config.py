@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:5173"
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
+    jira_encryption_key: str | None = None
     demo_auth_token: str = "dev-facilitator"
     rate_limit_join_per_minute: PositiveInt = 20
     rate_limit_import_per_minute: PositiveInt = 12
