@@ -34,7 +34,7 @@ Complete this section for the actual release; record evidence in the deployment 
 - [ ] Coolify domains, TLS, secrets, resource limits, and health checks verified.
 - [ ] External web, API liveness, and Supabase readiness monitors alert the on-call channel and recovery notifications arrive.
 - [ ] Backup retention is recorded and an isolated restore drill has a successful date/result.
-- [ ] Desktop and phone smoke tests cover create, share, join, CSV and Jira import, select, two votes, reveal, estimate, Jira write-back, export, and exact-name delete.
+- [ ] Desktop and phone smoke tests cover create, share, join, CSV and Jira import, select, two votes, reveal, estimate, summary ownership distribution, reassignment, price editing, Jira write-back, export, and exact-name delete.
 - [ ] Privacy copy states active-room retention, deletion behavior, and backup expiry.
 - [ ] Rollback owner, incident contact, and release SHA are recorded.
 

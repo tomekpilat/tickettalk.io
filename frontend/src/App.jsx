@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { JiraConnectForm, JiraImportPanel, JiraWritebackPanel } from './components/JiraPanels.jsx'
+import { SummaryPlanningPanel } from './components/SummaryPlanning.jsx'
 import { setAnonymousDisplayName, useAuth } from './lib/auth.js'
 import { api } from './lib/api.js'
 import { isRoomLikePath, pushPath, roomIdFromPath, roomPath } from './lib/routing.js'
@@ -614,6 +615,18 @@ function Workspace({ user }) {
     }
   }
 
+  const saveSummaryEstimate = async (ticket, value) => {
+    try {
+      const updated = await api.setFinalEstimate(room.id, ticket.id, value)
+      setTickets((items) => items.map((item) => item.id === updated.id ? updated : item))
+      setToast(`${ticket.issue_key || 'Ticket'} price updated`)
+      return true
+    } catch (error) {
+      setToast(error.message)
+      return false
+    }
+  }
+
   const writeResultsToJira = async () => {
     if (!window.confirm('Write final estimates and assignees to Jira?')) return
     setWritingJira(true)
@@ -828,8 +841,8 @@ function Workspace({ user }) {
         <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section>
         <ParticipantRoster members={members} currentUserId={user.id} compact />
         <div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div>
-        <div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.final_estimate == null ? 'empty-points' : ''}>{item.final_estimate ?? '—'}</b></button>)}</div>
-        {isFacilitator && tickets.some((ticket) => ticket.jira_issue_id) && <JiraWritebackPanel connection={jiraConnection} tickets={tickets} scale={room.scale} result={jiraWriteback} writing={writingJira} loadAssignees={(ticket, query) => api.jiraAssignees(room.id, ticket.id, query)} onSelectAssignee={saveJiraAssignee} onWriteback={writeResultsToJira} />}
+        <SummaryPlanningPanel tickets={tickets} scale={votingScale} isFacilitator={isFacilitator} loadAssignees={(ticket, query) => api.jiraAssignees(room.id, ticket.id, query)} onAssignee={saveJiraAssignee} onEstimate={saveSummaryEstimate} />
+        {isFacilitator && tickets.some((ticket) => ticket.jira_issue_id) && <JiraWritebackPanel connection={jiraConnection} tickets={tickets} scale={room.scale} result={jiraWriteback} writing={writingJira} onWriteback={writeResultsToJira} />}
       </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
       {toast && <Toast>{toast}</Toast>}

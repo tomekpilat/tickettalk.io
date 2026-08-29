@@ -302,7 +302,7 @@ sequenceDiagram
 
 JQL saving deliberately re-runs the query instead of trusting browser preview rows. Imported tickets store Jira's immutable issue ID, mutable issue key, source estimate, source assignee, and source update timestamp. The existing duplicate policy remains keyed by the normalized issue key. Replacing a snapshot does not directly change vote rows or final estimates.
 
-The current write-back is synchronous and sequential. It is explicit rather than automatic: the summary lets the facilitator choose a final assignable Jira user, then confirms one batch. Each issue update sends the numeric final estimate to the discovered Story Points field and the final assignee as a Jira `accountId`. Failures are isolated and returned per ticket. T-shirt rooms cannot write to numeric Story Points and remain export-only.
+The current write-back is synchronous and sequential. It is explicit rather than automatic: the summary lets the facilitator revise final estimates, choose a final assignable Jira user, then confirm one batch. The ownership chart is derived client-side from `tickets.final_assignee_display_name`; Jira-linked tickets are grouped by final Jira assignee, while manual tickets and Jira tickets without an owner are grouped as `Unassigned`. Each issue update sends the numeric final estimate to the discovered Story Points field and the final assignee as a Jira `accountId`. Failures are isolated and returned per ticket. T-shirt rooms cannot write to numeric Story Points and remain export-only.
 
 ### Voting, reveal, and final estimate
 
@@ -365,6 +365,9 @@ After the last outstanding final estimate is saved, the facilitator closes votin
 
 - Room completion is `tickets with final_estimate / all tickets`.
 - Completed rooms with no active ticket open directly on the summary.
+- The summary presents ticket counts, numeric point totals, and percentage share by final Jira assignee; unassigned and manual tickets are kept visible.
+- The facilitator can update any revealed ticket's final estimate using the room scale. Jira-linked tickets can also be reassigned to users returned by Jira's assignable-user API. These edits use the existing protected ticket endpoints and immediately update the summary distribution.
+- Participants can see the final ownership and prices but cannot edit them.
 - Export is generated server-side as CSV and is facilitator-only.
 - Deletion is facilitator-only, requires an exact room-name confirmation in the UI, and cascades through room-owned data.
 - The API logs the room and owner UUID for deletion. General request logs include the request path, which can contain a room UUID, but exclude bodies, tokens, and vote values. Logs must therefore be treated as capability-sensitive operational data.

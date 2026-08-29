@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 export function JiraConnectForm({ draft, setDraft, connecting, onConnect }) {
   return (
     <form className="panel jira-connect" onSubmit={onConnect}>
@@ -63,48 +61,21 @@ export function JiraWritebackPanel({
   scale,
   result,
   writing,
-  loadAssignees,
-  onSelectAssignee,
   onWriteback,
 }) {
   const jiraTickets = tickets.filter((ticket) => ticket.jira_issue_id)
   const incomplete = jiraTickets.some((ticket) => ticket.final_estimate == null)
+  const written = jiraTickets.filter((ticket) => ticket.jira_writeback_at).length
+  const failed = jiraTickets.filter((ticket) => ticket.jira_writeback_error)
   return (
     <section className="panel jira-writeback">
       <div className="panel-label"><span>Jira write-back</span><small>{connection?.jira_display_name || 'Connected account'}</small></div>
-      <p>Review the final owner for each Jira ticket. One confirmation writes both the final estimate and assignee.</p>
-      <div className="jira-writeback-list">{jiraTickets.map((ticket) => (
-        <div className="jira-writeback-row" key={ticket.id}>
-          <span>{ticket.issue_key}</span>
-          <strong>{ticket.final_estimate ?? '—'} pts</strong>
-          <AssigneePicker ticket={ticket} loadUsers={(query) => loadAssignees(ticket, query)} onSelect={(option) => onSelectAssignee(ticket, option)} />
-          <small className={ticket.jira_writeback_error ? 'write-failed' : ticket.jira_writeback_at ? 'write-done' : ''}>{ticket.jira_writeback_error || (ticket.jira_writeback_at ? 'Written' : 'Pending')}</small>
-        </div>
-      ))}</div>
+      <p>When ownership and pricing look right, write both fields to Jira in one confirmed action.</p>
+      <div className="jira-writeback-overview"><span><strong>{jiraTickets.length}</strong> Jira tickets</span><span><strong>{written}</strong> written</span><span className={failed.length ? 'write-failed' : ''}><strong>{failed.length}</strong> failed</span></div>
+      {failed.map((ticket) => <p className="form-error" key={ticket.id}>{ticket.issue_key}: {ticket.jira_writeback_error}</p>)}
       {result && <div className={result.failed_count ? 'writeback-result failed' : 'writeback-result'}>{result.succeeded_count} updated · {result.failed_count} failed</div>}
       <button className="primary" disabled={writing || scale === 'tshirt' || incomplete} onClick={onWriteback}>{writing ? 'Writing to Jira…' : 'Write final results to Jira'} <span>→</span></button>
       {scale === 'tshirt' && <p className="form-error">T-shirt estimates cannot be written to Jira’s numeric Story Points field.</p>}
     </section>
   )
-}
-
-function AssigneePicker({ ticket, loadUsers, onSelect }) {
-  const [options, setOptions] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const open = async () => {
-    setLoading(true)
-    setError('')
-    try {
-      setOptions(await loadUsers(''))
-    } catch (nextError) {
-      setError(nextError.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (!options) return <div className="assignee-picker"><span>{ticket.final_assignee_display_name || 'Unassigned'}</span><button className="secondary" disabled={loading} onClick={open}>{loading ? 'Loading…' : 'Change'}</button>{error && <small>{error}</small>}</div>
-  return <div className="assignee-picker"><select aria-label={`Final assignee for ${ticket.issue_key}`} value={ticket.final_assignee_account_id || ''} onChange={(event) => { const option = options.find((item) => item.account_id === event.target.value); onSelect(option || null) }}><option value="">Unassigned</option>{options.map((option) => <option value={option.account_id} key={option.account_id}>{option.display_name}</option>)}</select><button className="secondary" onClick={() => setOptions(null)}>Done</button></div>
 }

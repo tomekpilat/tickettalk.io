@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.jsx'
 
@@ -615,7 +615,8 @@ describe('vote reveal and final estimate', () => {
     ))
     await waitFor(() => expect(apiMock.setActiveTicket).toHaveBeenCalledWith(roomId, null))
     expect(await screen.findByRole('heading', { name: 'Pricing summary' })).toBeVisible()
-    expect(screen.getByText('100%')).toBeVisible()
+    const completeStat = screen.getByText('Complete').parentElement
+    expect(within(completeStat).getByText('100%')).toBeVisible()
   })
 
   it('keeps the summary open when Realtime refreshes the same active ticket', async () => {
@@ -698,6 +699,7 @@ describe('room export and deletion', () => {
       final_assignee_account_id: 'account-maya',
       final_assignee_display_name: 'Maya Chen',
     })
+    apiMock.setFinalEstimate.mockResolvedValue({ ...jiraTicket, final_estimate: '8' })
     apiMock.writebackJira.mockResolvedValue({
       items: [{ ticket_id: jiraTicket.id, issue_key: jiraTicket.issue_key, success: true }],
       succeeded_count: 1,
@@ -707,11 +709,17 @@ describe('room export and deletion', () => {
 
     render(<App />)
     expect(await screen.findByText('Jira write-back')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Change' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reassign' }))
     const selector = await screen.findByLabelText('Final assignee for PAY-201')
     fireEvent.change(selector, { target: { value: 'account-maya' } })
     await waitFor(() => expect(apiMock.setJiraAssignee).toHaveBeenCalledWith(
       roomId, jiraTicket.id, 'account-maya', 'Maya Chen',
+    ))
+    fireEvent.change(screen.getByLabelText('Final estimate for PAY-201'), {
+      target: { value: '8' },
+    })
+    await waitFor(() => expect(apiMock.setFinalEstimate).toHaveBeenCalledWith(
+      roomId, jiraTicket.id, '8',
     ))
     fireEvent.click(screen.getByRole('button', { name: /Write final results to Jira/ }))
     await waitFor(() => expect(apiMock.writebackJira).toHaveBeenCalledWith(roomId))

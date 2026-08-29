@@ -19,3 +19,24 @@ export function remainingTicketIndex(tickets, currentIndex) {
     (ticket, index) => index !== currentIndex && ticket.final_estimate == null,
   )
 }
+
+export function ticketDistribution(tickets) {
+  const grouped = new Map()
+  for (const ticket of tickets) {
+    const assignee = ticket.final_assignee_display_name || 'Unassigned'
+    const current = grouped.get(assignee) || { assignee, count: 0, points: 0 }
+    current.count += 1
+    current.points += Number(ticket.final_estimate) || 0
+    grouped.set(assignee, current)
+  }
+  return [...grouped.values()]
+    .sort((left, right) => (
+      left.assignee === 'Unassigned' ? 1
+        : right.assignee === 'Unassigned' ? -1
+          : right.count - left.count || left.assignee.localeCompare(right.assignee)
+    ))
+    .map((item) => ({
+      ...item,
+      share: tickets.length ? item.count / tickets.length : 0,
+    }))
+}

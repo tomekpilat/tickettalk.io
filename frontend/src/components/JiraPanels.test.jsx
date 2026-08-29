@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { JiraConnectForm, JiraImportPanel, JiraWritebackPanel } from './JiraPanels.jsx'
 
@@ -54,23 +54,21 @@ describe('Jira panels', () => {
     expect(screen.getByRole('button', { name: /Import 0 tickets/ })).toBeDisabled()
   })
 
-  it('surfaces assignee loading failures and blocks numeric write-back for T-shirt rooms', async () => {
+  it('surfaces ticket write-back failures and blocks numeric write-back for T-shirt rooms', () => {
     render(<JiraWritebackPanel
       connection={{ jira_display_name: 'Maya' }}
       tickets={[{
         id: 'ticket-1', issue_key: 'PAY-1', jira_issue_id: '101',
         final_estimate: 'M', final_assignee_display_name: null,
+        jira_writeback_error: 'Jira unavailable',
       }]}
       scale="tshirt"
       result={{ succeeded_count: 0, failed_count: 1 }}
       writing={false}
-      loadAssignees={vi.fn().mockRejectedValue(new Error('Jira unavailable'))}
-      onSelectAssignee={vi.fn()}
       onWriteback={vi.fn()}
     />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Change' }))
-    await waitFor(() => expect(screen.getByText('Jira unavailable')).toBeVisible())
+    expect(screen.getByText(/PAY-1: Jira unavailable/)).toBeVisible()
     expect(screen.getByRole('button', { name: /Write final results to Jira/ })).toBeDisabled()
     expect(screen.getByText(/T-shirt estimates cannot be written/)).toBeVisible()
     expect(screen.getByText('0 updated · 1 failed')).toBeVisible()
