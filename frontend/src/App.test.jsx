@@ -501,6 +501,28 @@ describe('active ticket synchronization', () => {
     expect(screen.getByText('PAY-205 · Bug')).toBeVisible()
   })
 
+  it('formats a multiline ticket description as readable paragraphs', async () => {
+    const activeRoom = { ...room, active_ticket_id: ticketOne.id }
+    const detailedTicket = {
+      ...ticketOne,
+      description: 'Notify customers when a payment fails.\n\nInclude the decline reason.\nAdd a link to retry the payment.',
+    }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(activeRoom)
+    apiMock.tickets.mockResolvedValue([detailedTicket, ticketTwo])
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Wallet alert' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Ticket detail' }))
+
+    const description = screen.getByText('Notify customers when a payment fails.').closest('.description')
+    expect(description).toBeVisible()
+    expect(description.querySelectorAll('p')).toHaveLength(3)
+    expect(within(description).getByText('Include the decline reason.')).toBeVisible()
+    expect(within(description).getByText('Add a link to retry the payment.')).toBeVisible()
+  })
+
   it('moves a member through Realtime and clears their ticket-scoped vote status', async () => {
     const member = {
       id: '00000000-0000-0000-0000-000000000099',
