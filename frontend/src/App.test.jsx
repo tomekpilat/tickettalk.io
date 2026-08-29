@@ -499,6 +499,21 @@ describe('active ticket synchronization', () => {
     await waitFor(() => expect(apiMock.setActiveTicket).toHaveBeenCalledWith(roomId, ticketTwo.id))
     expect(await screen.findByRole('heading', { name: 'Webhook retry' })).toBeVisible()
     expect(screen.getByText('PAY-205 · Bug')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open ticket PAY-201' })).toHaveTextContent('PAY-201')
+    expect(screen.getByRole('button', { name: 'Open ticket PAY-205' })).toHaveTextContent('PAY-205')
+  })
+
+  it('uses a readable fallback for a manual ticket in the pricing rail', async () => {
+    const manualTicket = { ...ticketOne, id: 'ticket-manual', issue_key: null, summary: 'Team discussion' }
+    const activeRoom = { ...room, active_ticket_id: manualTicket.id }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(activeRoom)
+    apiMock.tickets.mockResolvedValue([manualTicket])
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Team discussion' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open ticket Manual 1' })).toHaveTextContent('Manual 1')
   })
 
   it('formats a multiline ticket description as readable paragraphs', async () => {
