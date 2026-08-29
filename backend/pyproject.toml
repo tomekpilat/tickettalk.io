@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "FastAPI service for collaborative story pricing"
 requires-python = ">=3.12"
 dependencies = [
+  "cryptography>=44,<51",
   "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
   "pydantic-settings>=2.7,<3",
   "supabase>=2.12,<3",
   "uvicorn[standard]>=0.34,<1",
@@ -20,15 +22,17 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = ["--ignore-glob=* 2.py"]
 
 [tool.coverage.run]
 source = ["app"]
 omit = ["app/* 2.py"]
 
 [tool.coverage.report]
-fail_under = 75
+fail_under = 78
 show_missing = true
 skip_covered = true
 
 [tool.ruff]
 line-length = 100
+exclude = ["* 2.py"]

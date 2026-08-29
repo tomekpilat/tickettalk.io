@@ -2,17 +2,23 @@ import csv
 import io
 import re
 from datetime import UTC, datetime
-from functools import lru_cache
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from .auth import Principal, PrincipalDep
 from .config import Settings, get_settings
+from .dependencies import (
+    RepositoryDep,
+    get_jira_client_factory,
+    get_repository,
+    get_token_cipher,
+)
 from .jira import parse_jira_import
+from .jira_client import JiraError
+from .jira_routes import router as jira_router
 from .models import (
     ActiveTicketUpdate,
     FinalEstimateUpdate,
@@ -36,24 +42,17 @@ from .observability import RequestContextMiddleware, event_logger, log_event
 from .repositories import (
     ConflictError,
     ForbiddenError,
-    InMemoryRepository,
     NotFoundError,
     Repository,
-    SupabaseRepository,
 )
 
-
-@lru_cache
-def get_repository() -> Repository:
-    settings = get_settings()
-    if settings.supabase_configured:
-        return SupabaseRepository(
-            settings.supabase_url or "", settings.supabase_service_role_key or ""
-        )
-    return InMemoryRepository()
-
-
-RepositoryDep = Annotated[Repository, Depends(get_repository)]
+__all__ = [
+    "app",
+    "create_app",
+    "get_jira_client_factory",
+    "get_repository",
+    "get_token_cipher",
+]
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -91,6 +90,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def conflict_handler(_: Request, error: ConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(error)})
 
+    @app.exception_handler(JiraError)
+    async def jira_error_handler(_: Request, error: JiraError) -> JSONResponse:
+        return JSONResponse(status_code=502, content={"detail": str(error)})
+
+    app.include_router(jira_router)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -106,7 +111,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_id=request.state.request_id,
                 dependency="supabase",
             )
-            raise HTTPException(status_code=503, detail="A required service is unavailable")
+            raise HTTPException(
+                status_code=503, detail="A required service is unavailable"
+            ) from None
         return {"status": "ready"}
 
     @app.get("/api/me", response_model=Principal)

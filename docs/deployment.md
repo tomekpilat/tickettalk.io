@@ -37,6 +37,7 @@ APP_ENV=production
 FRONTEND_ORIGIN=https://tickettalk.io
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+JIRA_ENCRYPTION_KEY=YOUR_FERNET_KEY
 RATE_LIMIT_JOIN_PER_MINUTE=20
 RATE_LIMIT_IMPORT_PER_MINUTE=12
 RATE_LIMIT_VOTE_PER_MINUTE=120
@@ -44,13 +45,16 @@ RATE_LIMIT_VOTE_PER_MINUTE=120
 
 Compose uses required-variable expressions, so a build with an incomplete environment stops before deployment. In Supabase Auth, enable anonymous sign-ins; email providers and redirect allow-list entries are not required. Apply all migrations in `supabase/migrations` before inviting users.
 
+Generate `JIRA_ENCRYPTION_KEY` once with the command documented in the root README. It encrypts the per-room Jira API tokens and must exist only in the API runtime. Keep it stable across deploys and backups. Rotating it requires every active Jira room connection to be recreated unless a key-rotation migration is implemented first.
+
 ## First deployment checks
 
 1. Deploy and wait for both Coolify health checks to become green.
 2. Confirm `https://tickettalk.io/healthz` returns `200`, `https://api.tickettalk.io/health` returns `{"status":"ok"}`, and `https://api.tickettalk.io/health/ready` returns `{"status":"ready"}`.
 3. Without registering, create a room, copy its UUID URL, open that exact URL in a private browser, join, vote, reveal, and export. Confirm that a different UUID returns an unavailable-room response.
-4. Inspect the built web assets and browser network log: `SUPABASE_SERVICE_ROLE_KEY` must not appear anywhere.
-5. Confirm cross-origin API calls originate only from `https://tickettalk.io` and produce no mixed-content errors.
+4. In a test room, connect a limited Jira API token, preview a narrow JQL query, import one issue, and write its final result back. Disconnect the room afterward.
+5. Inspect the built web assets and browser network log: `SUPABASE_SERVICE_ROLE_KEY`, `JIRA_ENCRYPTION_KEY`, and Jira API tokens must not appear anywhere.
+6. Confirm cross-origin API calls originate only from `https://tickettalk.io` and produce no mixed-content errors.
 
 ## Deploy and rollback
 

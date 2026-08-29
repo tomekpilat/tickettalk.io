@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
+import { JiraConnectForm, JiraImportPanel, JiraWritebackPanel } from './components/JiraPanels.jsx'
+import { SummaryPlanningPanel } from './components/SummaryPlanning.jsx'
 import { setAnonymousDisplayName, useAuth } from './lib/auth.js'
 import { api } from './lib/api.js'
 import { isRoomLikePath, pushPath, roomIdFromPath, roomPath } from './lib/routing.js'
 import { subscribeToRoom } from './lib/supabase.js'
+import { completionPercentage, remainingTicketIndex, roomView } from './lib/workspace.js'
 
 const scales = {
   fibonacci: ['0', '1', '2', '3', '5', '8', '13', '21', '?'],
@@ -64,8 +67,15 @@ function Workspace({ user }) {
   const [roomScale, setRoomScale] = useState('fibonacci')
   const [revealMode, setRevealMode] = useState('manual')
   const [importText, setImportText] = useState(sampleImport)
+  const [importMode, setImportMode] = useState('csv')
   const [duplicateBehavior, setDuplicateBehavior] = useState('error')
   const [importPreview, setImportPreview] = useState(null)
+  const [jiraConnection, setJiraConnection] = useState(null)
+  const [jiraDraft, setJiraDraft] = useState({ site_url: '', email: '', api_token: '' })
+  const [jql, setJql] = useState('project = PAY AND resolution = Unresolved ORDER BY Rank ASC')
+  const [jiraPreview, setJiraPreview] = useState(null)
+  const [jiraConnecting, setJiraConnecting] = useState(false)
+  const [jiraSearching, setJiraSearching] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [importing, setImporting] = useState(false)
   const [ticketDraft, setTicketDraft] = useState(null)
@@ -78,6 +88,8 @@ function Workspace({ user }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState(null)
   const [toast, setToast] = useState('')
+  const [writingJira, setWritingJira] = useState(false)
+  const [jiraWriteback, setJiraWriteback] = useState(null)
 
   const refreshRooms = useCallback(async () => {
     try {
@@ -110,6 +122,16 @@ function Workspace({ user }) {
       setRoom(nextRoom)
       setTickets(nextTickets)
       setMembers(nextMembers)
+      if (nextRoom.owner_id === user.id) {
+        try {
+          setJiraConnection(await api.jiraConnection(roomId))
+        } catch (error) {
+          if (error.status !== 404) setToast(error.message)
+          setJiraConnection(null)
+        }
+      } else {
+        setJiraConnection(null)
+      }
       setVoteSubmitted(nextMembers.some((member) => member.user_id === user.id && member.has_voted))
       setChoosingVote(false)
       const activeIndex = Math.max(0, nextTickets.findIndex((ticket) => ticket.id === nextRoom.active_ticket_id))
@@ -119,13 +141,7 @@ function Workspace({ user }) {
       } else {
         setVoteResults(null)
       }
-      const allTicketsPriced = nextTickets.length > 0
-        && nextTickets.every((ticket) => ticket.final_estimate != null)
-      setView(nextRoom.active_ticket_id
-        ? 'session'
-        : allTicketsPriced
-          ? 'summary'
-          : nextTickets.length ? 'backlog' : 'import')
+      setView(roomView(nextRoom, nextTickets))
       setApiOnline(true)
       if (options.push !== false) pushPath(roomPath(nextRoom.id))
     } catch (error) {
@@ -147,6 +163,9 @@ function Workspace({ user }) {
     setMembers([])
     setRouteError(null)
     setSettingsOpen(false)
+    setJiraConnection(null)
+    setJiraPreview(null)
+    setJiraWriteback(null)
     refreshRooms()
   }, [refreshRooms])
 
@@ -202,9 +221,7 @@ function Workspace({ user }) {
           setVoteSubmitted(false)
           setChoosingVote(false)
           setVoteResults(null)
-          const allTicketsPriced = freshTickets.length > 0
-            && freshTickets.every((ticket) => ticket.final_estimate != null)
-          setView(allTicketsPriced ? 'summary' : freshTickets.length ? 'backlog' : 'import')
+          setView(roomView(freshRoom, freshTickets))
         }
       } catch { /* the next user action will surface connectivity or authorization */ }
     })
@@ -230,23 +247,14 @@ function Workspace({ user }) {
   }, [toast])
 
   const current = tickets[ticketIndex] || tickets[0]
-  const completion = tickets.length
-    ? Math.round((tickets.filter((item) => item.final_estimate != null).length / tickets.length) * 100)
-    : 0
+  const completion = completionPercentage(tickets)
   const nextUnsizedIndex = tickets.findIndex((item) => item.final_estimate == null)
-  const nextUnsizedAfterCurrent = tickets.findIndex(
-    (item, index) => index > ticketIndex && item.final_estimate == null
-  )
-  const remainingUnsizedIndex = nextUnsizedAfterCurrent >= 0
-    ? nextUnsizedAfterCurrent
-    : tickets.findIndex(
-      (item, index) => index !== ticketIndex && item.final_estimate == null
-    )
+  const remainingUnsizedIndex = remainingTicketIndex(tickets, ticketIndex)
   const votingScale = scales[room?.scale] || scales.fibonacci
   const isFacilitator = Boolean(room && room.owner_id === user.id)
 
   useEffect(() => {
-    if (!room?.id || view !== 'import' || !isFacilitator || !importText.trim()) {
+    if (!room?.id || view !== 'import' || importMode !== 'csv' || !isFacilitator || !importText.trim()) {
       setImportPreview(null)
       return undefined
     }
@@ -269,7 +277,7 @@ function Workspace({ user }) {
       cancelled = true
       window.clearTimeout(timeout)
     }
-  }, [duplicateBehavior, importText, isFacilitator, room?.id, view])
+  }, [duplicateBehavior, importMode, importText, isFacilitator, room?.id, view])
 
   const createRoom = async () => {
     setFormError('')
@@ -318,6 +326,74 @@ function Workspace({ user }) {
       setTickets(result.tickets)
       setRoom((currentRoom) => ({ ...currentRoom, ticket_count: result.tickets.length }))
       setToast(`${result.imported_count + result.replaced_count} tickets saved`)
+      setView('backlog')
+    } catch (error) {
+      setFormError(error.message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const connectJira = async (event) => {
+    event.preventDefault()
+    setFormError('')
+    setJiraConnecting(true)
+    try {
+      const connected = await api.connectJira(room.id, jiraDraft)
+      setJiraConnection(connected)
+      setJiraDraft((draft) => ({ ...draft, api_token: '' }))
+      setToast(`Connected as ${connected.jira_display_name}`)
+    } catch (error) {
+      setFormError(error.message)
+    } finally {
+      setJiraConnecting(false)
+    }
+  }
+
+  const searchJira = async () => {
+    if (!jql.trim()) return
+    setFormError('')
+    setJiraSearching(true)
+    try {
+      setJiraPreview(await api.searchJira(room.id, jql, duplicateBehavior))
+    } catch (error) {
+      setJiraPreview(null)
+      setFormError(error.message)
+    } finally {
+      setJiraSearching(false)
+    }
+  }
+
+  const selectJiraField = async (fieldId) => {
+    try {
+      setJiraConnection(await api.selectJiraStoryPointsField(room.id, fieldId))
+      setToast('Jira estimate field updated')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const disconnectJira = async () => {
+    if (!window.confirm('Disconnect Jira and remove this room’s stored credential?')) return
+    try {
+      await api.disconnectJira(room.id)
+      setJiraConnection(null)
+      setJiraPreview(null)
+      setToast('Jira disconnected')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const saveJiraImport = async () => {
+    if (!jiraPreview?.saved_count || jiraPreview.errors.length) return
+    setImporting(true)
+    setFormError('')
+    try {
+      const result = await api.importJira(room.id, jql, duplicateBehavior)
+      setTickets(result.tickets)
+      setRoom((currentRoom) => ({ ...currentRoom, ticket_count: result.tickets.length }))
+      setToast(`${result.imported_count + result.replaced_count} Jira tickets saved`)
       setView('backlog')
     } catch (error) {
       setFormError(error.message)
@@ -527,6 +603,46 @@ function Workspace({ user }) {
     }).catch((error) => setToast(error.message))
   }
 
+  const saveJiraAssignee = async (ticket, userOption) => {
+    try {
+      const updated = await api.setJiraAssignee(
+        room.id, ticket.id, userOption?.account_id || null, userOption?.display_name || null,
+      )
+      setTickets((items) => items.map((item) => item.id === updated.id ? updated : item))
+      setToast('Final Jira assignee saved')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const saveSummaryEstimate = async (ticket, value) => {
+    try {
+      const updated = await api.setFinalEstimate(room.id, ticket.id, value)
+      setTickets((items) => items.map((item) => item.id === updated.id ? updated : item))
+      setToast(`${ticket.issue_key || 'Ticket'} price updated`)
+      return true
+    } catch (error) {
+      setToast(error.message)
+      return false
+    }
+  }
+
+  const writeResultsToJira = async () => {
+    if (!window.confirm('Write final estimates and assignees to Jira?')) return
+    setWritingJira(true)
+    setJiraWriteback(null)
+    try {
+      const result = await api.writebackJira(room.id)
+      setJiraWriteback(result)
+      setTickets(await api.tickets(room.id))
+      setToast(result.failed_count ? `${result.failed_count} Jira updates failed` : 'Jira updated')
+    } catch (error) {
+      setToast(error.message)
+    } finally {
+      setWritingJira(false)
+    }
+  }
+
   const deleteRoom = async () => {
     const confirmation = window.prompt(`Type the room name to delete it permanently:\n\n${room.name}`)
     if (confirmation !== room.name) {
@@ -686,13 +802,16 @@ function Workspace({ user }) {
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
       <main className="page import-page">
         <div className="page-toolbar"><Back onClick={goToRooms}>Rooms</Back>{roomActions}</div>
-        <div className="split-heading"><div><p className="eyebrow">{room.name} / import</p><h1>Bring in the tickets.</h1></div><p>Paste a Jira export. We’ll keep the key, type and story context attached to every estimate.</p></div>
+        <div className="split-heading"><div><p className="eyebrow">{room.name} / import</p><h1>Bring in the tickets.</h1></div><p>Pull directly from Jira with JQL, or paste a CSV export. The source context stays attached to every estimate.</p></div>
         <ParticipantRoster members={members} currentUserId={user.id} compact />
+        <div className="import-tabs segmented" aria-label="Import source"><button className={importMode === 'jira' ? 'active' : ''} onClick={() => setImportMode('jira')}>Jira + JQL</button><button className={importMode === 'csv' ? 'active' : ''} onClick={() => setImportMode('csv')}>CSV / TSV</button></div>
         {formError && <p className="form-error inline-error">{formError}</p>}
-        <section className="import-grid">
+        {importMode === 'csv' && <section className="import-grid">
           <div className="panel import-editor"><div className="panel-label"><span>CSV or TSV input</span><small>01</small></div><textarea aria-label="Jira import" value={importText} onChange={(event) => setImportText(event.target.value)} /><label className="duplicate-choice">Existing Jira keys<select value={duplicateBehavior} onChange={(event) => setDuplicateBehavior(event.target.value)}><option value="error">Ask me to decide</option><option value="skip">Skip existing</option><option value="replace">Replace existing</option></select></label><div className="editor-actions"><label className="secondary file-picker">Choose file<input type="file" accept=".csv,.tsv,.txt" onChange={(event) => loadImportFile(event.target.files?.[0])} /></label><span>Maximum 1 MB · 500 tickets</span></div></div>
           <div className="panel preview"><div className="panel-label"><span>Validated preview</span><small>{String(importPreview?.source_count || 0).padStart(2, '0')}</small></div>{previewing && <p className="preview-message">Checking rows…</p>}{importPreview?.errors.map((error) => <div className="import-error" key={`${error.row_number}-${error.field}`}><strong>Row {error.row_number || '—'} · {error.field}</strong><span>{error.message}</span><small>{error.fix}</small></div>)}{!previewing && importPreview?.rows.map((item) => <div className="preview-row" key={`${item.row_number}-${item.issue_key || item.summary}`}><span>{item.issue_key || 'Manual'}</span><p>{item.summary}</p><small>{item.action}</small></div>)}<div className="preview-counts"><span>{importPreview?.saved_count || 0} to save</span><span>{importPreview?.skipped_count || 0} skipped</span></div><button className="primary wide" disabled={previewing || importing || !importPreview?.saved_count || importPreview.errors.length > 0} onClick={saveImport}>{importing ? 'Saving tickets…' : `Save ${importPreview?.saved_count || 0} to backlog`} <span>→</span></button></div>
-        </section>
+        </section>}
+        {importMode === 'jira' && !jiraConnection && <JiraConnectForm draft={jiraDraft} setDraft={setJiraDraft} connecting={jiraConnecting} onConnect={connectJira} />}
+        {importMode === 'jira' && jiraConnection && <JiraImportPanel connection={jiraConnection} jql={jql} setJql={setJql} duplicateBehavior={duplicateBehavior} setDuplicateBehavior={setDuplicateBehavior} preview={jiraPreview} searching={jiraSearching} importing={importing} onSelectField={selectJiraField} onDisconnect={disconnectJira} onSearch={searchJira} onImport={saveJiraImport} />}
         <div className="manual-entry"><span>Not in Jira?</span><button className="secondary" onClick={openNewTicket}>Add a ticket manually</button></div>
       </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
@@ -717,7 +836,14 @@ function Workspace({ user }) {
 
   if (view === 'summary') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
-      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView(room.active_ticket_id ? 'session' : 'backlog')}>{room.active_ticket_id ? 'Session' : 'Backlog'}</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.final_estimate == null ? 'empty-points' : ''}>{item.final_estimate ?? '—'}</b></button>)}</div></main>
+      <main className="page summary-page">
+        <div className="page-toolbar"><Back onClick={() => setView(room.active_ticket_id ? 'session' : 'backlog')}>{room.active_ticket_id ? 'Session' : 'Backlog'}</Back>{roomActions}</div>
+        <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section>
+        <ParticipantRoster members={members} currentUserId={user.id} compact />
+        <div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div>
+        <SummaryPlanningPanel tickets={tickets} scale={votingScale} isFacilitator={isFacilitator} loadAssignees={(ticket, query) => api.jiraAssignees(room.id, ticket.id, query)} onAssignee={saveJiraAssignee} onEstimate={saveSummaryEstimate} />
+        {isFacilitator && tickets.some((ticket) => ticket.jira_issue_id) && <JiraWritebackPanel connection={jiraConnection} tickets={tickets} scale={room.scale} result={jiraWriteback} writing={writingJira} onWriteback={writeResultsToJira} />}
+      </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>

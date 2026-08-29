@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.jsx'
 
@@ -21,6 +21,15 @@ const apiMock = vi.hoisted(() => ({
   updateRoom: vi.fn(),
   previewImport: vi.fn(),
   importTickets: vi.fn(),
+  jiraConnection: vi.fn(),
+  connectJira: vi.fn(),
+  selectJiraStoryPointsField: vi.fn(),
+  disconnectJira: vi.fn(),
+  searchJira: vi.fn(),
+  importJira: vi.fn(),
+  jiraAssignees: vi.fn(),
+  setJiraAssignee: vi.fn(),
+  writebackJira: vi.fn(),
   createTicket: vi.fn(),
   updateTicket: vi.fn(),
   deleteTicket: vi.fn(),
@@ -64,6 +73,7 @@ beforeEach(() => {
   apiMock.previewImport.mockResolvedValue({
     rows: [], errors: [], source_count: 0, saved_count: 0, skipped_count: 0,
   })
+  apiMock.jiraConnection.mockRejectedValue(Object.assign(new Error('Not connected'), { status: 404 }))
   apiMock.voteResults.mockResolvedValue({
     room_id: roomId, ticket_id: 'ticket-1', state: 'voting', round: 1, votes: [],
     average: null, minimum: null, maximum: null, consensus: null, final_estimate: null,
@@ -363,6 +373,64 @@ describe('ticket backlog', () => {
     expect(await screen.findByRole('heading', { name: 'Backlog' })).toBeVisible()
   })
 
+  it('connects a room to Jira and imports a JQL preview', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(backlogRoom)
+    apiMock.tickets.mockResolvedValue([])
+    apiMock.connectJira.mockResolvedValue({
+      room_id: roomId,
+      site_url: 'https://example.atlassian.net',
+      jira_display_name: 'Maya Jira',
+      story_points_field_id: 'customfield_10016',
+      story_points_fields: [
+        { id: 'customfield_10016', name: 'Story Points' },
+        { id: 'customfield_10026', name: 'Story point estimate' },
+      ],
+    })
+    apiMock.selectJiraStoryPointsField.mockResolvedValue({
+      room_id: roomId,
+      site_url: 'https://example.atlassian.net',
+      jira_display_name: 'Maya Jira',
+      story_points_field_id: 'customfield_10026',
+      story_points_fields: [
+        { id: 'customfield_10016', name: 'Story Points' },
+        { id: 'customfield_10026', name: 'Story point estimate' },
+      ],
+    })
+    apiMock.searchJira.mockResolvedValue({
+      rows: [{ row_number: 1, jira_issue_id: '10101', issue_key: 'PAY-201', summary: 'Wallet alert', action: 'import' }],
+      errors: [], source_count: 1, saved_count: 1, skipped_count: 0,
+    })
+    apiMock.importJira.mockResolvedValue({
+      tickets: [{ id: 'ticket-1', room_id: roomId, issue_key: 'PAY-201', summary: 'Wallet alert', jira_issue_id: '10101' }],
+      imported_count: 1, replaced_count: 0, skipped_count: 0,
+    })
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Jira + JQL' }))
+    fireEvent.change(screen.getByLabelText('Jira site URL'), { target: { value: 'https://example.atlassian.net' } })
+    fireEvent.change(screen.getByLabelText('Jira email'), { target: { value: 'maya@example.com' } })
+    fireEvent.change(screen.getByLabelText('Jira API token'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Jira' }))
+
+    expect(await screen.findByText(/Connected to/)).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Jira estimate field'), {
+      target: { value: 'customfield_10026' },
+    })
+    await waitFor(() => expect(apiMock.selectJiraStoryPointsField).toHaveBeenCalledWith(
+      roomId, 'customfield_10026',
+    ))
+    fireEvent.change(screen.getByLabelText('JQL query'), { target: { value: 'project = PAY' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview tickets' }))
+    expect(await screen.findByText('Wallet alert')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /Import 1 ticket/ }))
+
+    await waitFor(() => expect(apiMock.importJira).toHaveBeenCalledWith(
+      roomId, 'project = PAY', 'error',
+    ))
+    expect(await screen.findByRole('heading', { name: 'Backlog' })).toBeVisible()
+  })
+
   it('adds, edits, and reorders a manual ticket', async () => {
     const existing = { id: 'ticket-1', room_id: roomId, position: 0, issue_key: 'PAY-201', summary: 'Existing', issue_type: 'Story', description: '', story_points: null }
     const created = { id: 'ticket-2', room_id: roomId, position: 1, issue_key: null, summary: 'Manual decision', issue_type: 'Discussion', description: 'Discuss it', story_points: null }
@@ -547,7 +615,8 @@ describe('vote reveal and final estimate', () => {
     ))
     await waitFor(() => expect(apiMock.setActiveTicket).toHaveBeenCalledWith(roomId, null))
     expect(await screen.findByRole('heading', { name: 'Pricing summary' })).toBeVisible()
-    expect(screen.getByText('100%')).toBeVisible()
+    const completeStat = screen.getByText('Complete').parentElement
+    expect(within(completeStat).getByText('100%')).toBeVisible()
   })
 
   it('keeps the summary open when Realtime refreshes the same active ticket', async () => {
@@ -609,6 +678,52 @@ describe('room export and deletion', () => {
     fireEvent.click(screen.getByRole('button', { name: /Export CSV/ }))
     await waitFor(() => expect(apiMock.downloadRoomExport).toHaveBeenCalledWith(roomId))
     anchorClick.mockRestore()
+  })
+
+  it('selects a final Jira assignee and writes the summary back', async () => {
+    const jiraTicket = {
+      ...ticket,
+      jira_issue_id: '10101',
+      final_assignee_account_id: 'account-current',
+      final_assignee_display_name: 'Current Owner',
+    }
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(room)
+    apiMock.tickets.mockResolvedValue([jiraTicket])
+    apiMock.jiraConnection.mockResolvedValue({ jira_display_name: 'Maya Jira' })
+    apiMock.jiraAssignees.mockResolvedValue([
+      { account_id: 'account-maya', display_name: 'Maya Chen' },
+    ])
+    apiMock.setJiraAssignee.mockResolvedValue({
+      ...jiraTicket,
+      final_assignee_account_id: 'account-maya',
+      final_assignee_display_name: 'Maya Chen',
+    })
+    apiMock.setFinalEstimate.mockResolvedValue({ ...jiraTicket, final_estimate: '8' })
+    apiMock.writebackJira.mockResolvedValue({
+      items: [{ ticket_id: jiraTicket.id, issue_key: jiraTicket.issue_key, success: true }],
+      succeeded_count: 1,
+      failed_count: 0,
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<App />)
+    expect(await screen.findByText('Jira write-back')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Reassign' }))
+    const selector = await screen.findByLabelText('Final assignee for PAY-201')
+    fireEvent.change(selector, { target: { value: 'account-maya' } })
+    await waitFor(() => expect(apiMock.setJiraAssignee).toHaveBeenCalledWith(
+      roomId, jiraTicket.id, 'account-maya', 'Maya Chen',
+    ))
+    fireEvent.change(screen.getByLabelText('Final estimate for PAY-201'), {
+      target: { value: '8' },
+    })
+    await waitFor(() => expect(apiMock.setFinalEstimate).toHaveBeenCalledWith(
+      roomId, jiraTicket.id, '8',
+    ))
+    fireEvent.click(screen.getByRole('button', { name: /Write final results to Jira/ }))
+    await waitFor(() => expect(apiMock.writebackJira).toHaveBeenCalledWith(roomId))
+    expect(await screen.findByText('1 updated · 0 failed')).toBeVisible()
   })
 
   it('requires the exact room name before deleting and redirects home', async () => {

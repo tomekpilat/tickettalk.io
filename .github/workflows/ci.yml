@@ -88,6 +88,7 @@ jobs:
       FRONTEND_ORIGIN: https://tickettalk.io
       SUPABASE_URL: https://example.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ci-service-key
+      JIRA_ENCRYPTION_KEY: ci-compose-placeholder
     steps:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet

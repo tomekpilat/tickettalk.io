@@ -2,6 +2,8 @@
 
 Planning poker for pricing product stories in focused team sessions.
 
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the product architecture, trust boundaries, data model, and end-to-end data flows.
+
 ## Stack
 
 - React 19 + Vite (plain JavaScript and CSS)
@@ -60,11 +62,22 @@ Manual and automatic reveal share a durable ticket-round state. Automatic mode c
 
 Facilitators can download an authorized server-side CSV containing Jira metadata, original story points, and final tickettalk estimates. Room deletion requires typing the exact room name and cascades through memberships, tickets, safe vote statuses, and private votes; the API logs only room and owner identifiers for the deletion event.
 
-Jira imports accept CSV, TSV, pasted text, quoted commas, and multiline descriptions. Imports are limited to 1 MB and 500 tickets, validated by the API before saving, and require an explicit skip-or-replace choice for Jira keys already in the room. Facilitators can also add tickets without a Jira key and edit, reorder, or remove every backlog item; members retain read-only access.
+Jira imports support two room-scoped paths. A facilitator can connect their own Jira Cloud email and API token, run JQL, preview up to 500 results, and import the current issue context; or use CSV/TSV, pasted text, quoted commas, and multiline descriptions. Duplicate Jira keys require an explicit skip-or-replace choice. After pricing, the summary charts ticket ownership by final Jira assignee and highlights unassigned work. The facilitator can revise each final estimate, reassign Jira-linked tickets to Jira-assignable team members, and explicitly write the final numeric estimates and assignees back to Jira. Manual tickets remain visible as not linked to Jira. T-shirt estimates remain export-only because Jira Story Points is numeric.
+
+Jira API tokens never reach React after submission. FastAPI validates the Jira identity, encrypts the token with `JIRA_ENCRYPTION_KEY`, and stores the ciphertext for that room. Generate a Fernet key once and place it only in the API environment:
+
+```bash
+cd backend
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Keep this key stable while connections exist. Replacing it makes existing room credentials unreadable; disconnect/reconnect Jira before retiring an old key.
 
 FastAPI validates the Supabase JWT and always scopes reads and writes to the authenticated actor. Creating a room and its owner membership is atomic.
 
 ## Verification
+
+The fast unit suites use the in-memory repository. The CI database job additionally starts a clean local Supabase stack, runs every migration and pgTAP assertion, and reruns the backend suite with the real Supabase repository. That integration run enforces at least 85% backend line coverage; the frontend enforces statement, branch, function, and line thresholds in `vite.config.js`.
 
 ```bash
 cd backend
@@ -77,8 +90,10 @@ npm run test:coverage
 npm run build
 ```
 
+To reproduce the complete database gate locally, run `supabase start`, export the integration values shown by `supabase status -o env` as described by `.github/workflows/ci.yml`, and then run the backend coverage command with `--cov-fail-under=85`.
+
 ## Production configuration
 
-Set `APP_ENV=production` and `VITE_APP_ENV=production`, provide all Supabase values from `.env.example`, configure the deployed frontend URL in `FRONTEND_ORIGIN`, and enable anonymous sign-ins in Supabase Auth. No email provider or Auth redirect URL is required. The frontend subscribes to room, membership, ticket, and vote changes through Realtime.
+Set `APP_ENV=production` and `VITE_APP_ENV=production`, provide all Supabase values and `JIRA_ENCRYPTION_KEY` from `.env.example`, configure the deployed frontend URL in `FRONTEND_ORIGIN`, and enable anonymous sign-ins in Supabase Auth. No email provider or Auth redirect URL is required. The frontend subscribes to room, membership, ticket, and vote changes through Realtime.
 
 The production Compose topology and Coolify setup are documented in [`docs/deployment.md`](docs/deployment.md). Monitoring, incidents, restore drills, log safety, rate limits, and retention are in [`docs/operations.md`](docs/operations.md); production sign-off uses [`docs/release-checklist.md`](docs/release-checklist.md).
