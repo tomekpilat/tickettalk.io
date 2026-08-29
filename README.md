@@ -62,16 +62,16 @@ Manual and automatic reveal share a durable ticket-round state. Automatic mode c
 
 Facilitators can download an authorized server-side CSV containing Jira metadata, original story points, and final tickettalk estimates. Room deletion requires typing the exact room name and cascades through memberships, tickets, safe vote statuses, and private votes; the API logs only room and owner identifiers for the deletion event.
 
-Jira imports support room-scoped fast and bulk paths. A facilitator can connect their own Jira Cloud email and API token, add one issue by entering its key (for example `PAY-123`), or run JQL, preview up to 500 results, and import the current issue context. CSV/TSV also supports pasted text, quoted commas, and multiline descriptions. Duplicate Jira keys require an explicit skip-or-replace choice. After pricing, the summary charts ticket ownership by final Jira assignee and highlights unassigned work. The facilitator can revise each final estimate, reassign Jira-linked tickets to Jira-assignable team members, and explicitly write the final numeric estimates and assignees back to Jira. Manual tickets remain visible as not linked to Jira. T-shirt estimates remain export-only because Jira Story Points is numeric.
+Jira imports support room-scoped fast and bulk paths. The normal connection uses Atlassian OAuth 2.0 (3LO), so each facilitator consents with their own Jira identity and permissions. An API-token connection remains available under the advanced fallback for administration and private testing. A facilitator can add one issue by entering its key (for example `PAY-123`), or run JQL, preview up to 500 results, and import the current issue context. CSV/TSV also supports pasted text, quoted commas, and multiline descriptions. Duplicate Jira keys require an explicit skip-or-replace choice. After pricing, the summary charts ticket ownership by final Jira assignee and highlights unassigned work. The facilitator can revise each final estimate, reassign Jira-linked tickets to Jira-assignable team members, and explicitly write the final numeric estimates and assignees back to Jira. Manual tickets remain visible as not linked to Jira. T-shirt estimates remain export-only because Jira Story Points is numeric.
 
-Jira API tokens never reach React after submission. FastAPI validates the Jira identity, encrypts the token with `JIRA_ENCRYPTION_KEY`, and stores the ciphertext for that room. Generate a Fernet key once and place it only in the API environment:
+OAuth access tokens, rotating refresh tokens, and fallback API tokens never reach React after submission. FastAPI validates the Jira identity, encrypts credentials with `JIRA_ENCRYPTION_KEY`, and stores only ciphertext for that room. Generate a Fernet key once and place it only in the API environment:
 
 ```bash
 cd backend
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Keep this key stable while connections exist. Replacing it makes existing room credentials unreadable; disconnect/reconnect Jira before retiring an old key.
+Keep this key stable while connections exist. Replacing it makes existing room credentials unreadable; disconnect/reconnect Jira before retiring an old key. Production OAuth also requires `JIRA_OAUTH_CLIENT_ID`, `JIRA_OAUTH_CLIENT_SECRET`, and an exact `JIRA_OAUTH_REDIRECT_URI`; the Atlassian console steps are in [`docs/deployment.md`](docs/deployment.md#configure-atlassian-oauth-20-3lo).
 
 FastAPI validates the Supabase JWT and always scopes reads and writes to the authenticated actor. Creating a room and its owner membership is atomic.
 
@@ -94,6 +94,6 @@ To reproduce the complete database gate locally, run `supabase start`, export th
 
 ## Production configuration
 
-Set `APP_ENV=production` and `VITE_APP_ENV=production`, provide all Supabase values and `JIRA_ENCRYPTION_KEY` from `.env.example`, configure the deployed frontend URL in `FRONTEND_ORIGIN`, and enable anonymous sign-ins in Supabase Auth. No email provider or Auth redirect URL is required. The frontend subscribes to room, membership, ticket, and vote changes through Realtime.
+Set `APP_ENV=production` and `VITE_APP_ENV=production`, provide all Supabase and Jira OAuth values from `.env.example`, configure the deployed frontend URL in `FRONTEND_ORIGIN`, and enable anonymous sign-ins in Supabase Auth. No Supabase email provider or Auth redirect URL is required. The Atlassian OAuth callback URL is separate and must match exactly. The frontend subscribes to room, membership, ticket, and vote changes through Realtime.
 
 The production Compose topology and Coolify setup are documented in [`docs/deployment.md`](docs/deployment.md). Monitoring, incidents, restore drills, log safety, rate limits, and retention are in [`docs/operations.md`](docs/operations.md); production sign-off uses [`docs/release-checklist.md`](docs/release-checklist.md).

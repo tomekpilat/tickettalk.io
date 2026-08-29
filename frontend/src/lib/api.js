@@ -86,6 +86,12 @@ export const api = {
   connectJira: (roomId, connection) => request(`/api/rooms/${roomId}/jira/connection`, {
     method: 'POST', body: JSON.stringify(connection),
   }),
+  authorizeJiraOAuth: (roomId, siteUrl) => request(`/api/rooms/${roomId}/jira/oauth/authorize`, {
+    method: 'POST', body: JSON.stringify({ site_url: siteUrl }),
+  }),
+  completeJiraOAuth: (code, state) => request('/api/jira/oauth/callback', {
+    method: 'POST', body: JSON.stringify({ code, state }),
+  }),
   selectJiraStoryPointsField: (roomId, fieldId) => request(`/api/rooms/${roomId}/jira/connection/story-points-field`, {
     method: 'PUT', body: JSON.stringify({ field_id: fieldId }),
   }),

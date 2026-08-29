@@ -16,11 +16,16 @@ def test_connection_restricts_hosts_and_token_cipher_round_trips() -> None:
     )
     cipher = TokenCipher(generate_encryption_key())
     encrypted = cipher.encrypt(connection.api_token)
+    state = cipher.encrypt_state({"room_id": "room-1", "owner_id": "owner-1"})
 
     assert connection.site_url == "https://example.atlassian.net"
     assert connection.email == "user@example.com"
     assert encrypted != connection.api_token
     assert cipher.decrypt(encrypted) == connection.api_token
+    assert cipher.decrypt_state(state) == {
+        "room_id": "room-1",
+        "owner_id": "owner-1",
+    }
 
     for site_url in (
         "http://example.atlassian.net",
@@ -117,6 +122,24 @@ def test_client_reads_paginated_jql_adf_assignees_and_writes_fields() -> None:
         "customfield_10016": 8,
         "assignee": {"accountId": "account-2"},
     }
+
+
+def test_client_uses_bearer_auth_for_oauth_connections() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"accountId": "account-1", "displayName": "Maya"})
+
+    with JiraClient(
+        "https://api.atlassian.com/ex/jira/cloud-123",
+        None,
+        "oauth-access-token",
+        transport=httpx.MockTransport(handler),
+    ) as jira:
+        assert jira.myself()["account_id"] == "account-1"
+
+    assert requests[0].headers["Authorization"] == "Bearer oauth-access-token"
 
 
 def test_client_returns_safe_jira_errors() -> None:

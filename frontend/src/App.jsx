@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { JiraConnectForm, JiraImportPanel, JiraWritebackPanel } from './components/JiraPanels.jsx'
 import { SummaryPlanningPanel } from './components/SummaryPlanning.jsx'
 import { setAnonymousDisplayName, useAuth } from './lib/auth.js'
 import { api } from './lib/api.js'
-import { isRoomLikePath, pushPath, roomIdFromPath, roomPath } from './lib/routing.js'
+import { isRoomLikePath, jiraOAuthCallbackFromLocation, pushPath, replacePath, roomIdFromPath, roomPath } from './lib/routing.js'
 import { subscribeToRoom } from './lib/supabase.js'
 import { completionPercentage, remainingTicketIndex, roomView } from './lib/workspace.js'
 
@@ -40,12 +40,41 @@ function TicketDescription({ description }) {
   return <div className="description">{paragraphs.map((paragraph, index) => <p key={`${index}-${paragraph}`}>{paragraph}</p>)}</div>
 }
 
+function JiraOAuthCallback({ callback, onComplete }) {
+  const [error, setError] = useState(callback.error)
+  const started = useRef(false)
+  const onCompleteRef = useRef(onComplete)
+  onCompleteRef.current = onComplete
+
+  useEffect(() => {
+    if (started.current || callback.error) return
+    if (!callback.code || !callback.state) {
+      setError('Atlassian returned an incomplete authorization response. Connect Jira again.')
+      return
+    }
+    started.current = true
+    api.completeJiraOAuth(callback.code, callback.state)
+      .then((result) => onCompleteRef.current(result.room_id))
+      .catch((oauthError) => setError(oauthError.message))
+  }, [callback.code, callback.error, callback.state])
+
+  if (error) return <CenteredState eyebrow="Jira connection" title="Jira was not connected." detail={error} />
+  return <CenteredState eyebrow="Jira connection" title="Finishing the Atlassian connection…" detail="The encrypted room connection will be ready in a moment." />
+}
+
 function App() {
   const auth = useAuth()
   const [joiningRoomId, setJoiningRoomId] = useState(null)
+  const [oauthCompleted, setOauthCompleted] = useState(false)
   const sharedRoomId = roomIdFromPath()
+  const oauthCallback = jiraOAuthCallbackFromLocation()
+  const completeOAuth = useCallback((roomId) => {
+    replacePath(roomPath(roomId))
+    setOauthCompleted(true)
+  }, [])
   if (auth.loading) return <CenteredState eyebrow="Session" title="Checking your session…" />
   if (auth.error) return <CenteredState eyebrow="Configuration" title="The app needs attention." detail={auth.error} />
+  if (oauthCallback && !oauthCompleted && auth.user) return <JiraOAuthCallback callback={oauthCallback} onComplete={completeOAuth} />
   if ((!auth.user || joiningRoomId === sharedRoomId) && sharedRoomId) return (
     <JoinRoom
       roomId={sharedRoomId}
@@ -359,6 +388,19 @@ function Workspace({ user }) {
     } catch (error) {
       setFormError(error.message)
     } finally {
+      setJiraConnecting(false)
+    }
+  }
+
+  const connectJiraOAuth = async (event) => {
+    event.preventDefault()
+    setFormError('')
+    setJiraConnecting(true)
+    try {
+      const result = await api.authorizeJiraOAuth(room.id, jiraDraft.site_url)
+      window.location.assign(result.authorization_url)
+    } catch (error) {
+      setFormError(error.message)
       setJiraConnecting(false)
     }
   }
@@ -862,7 +904,7 @@ function Workspace({ user }) {
           <div className="panel import-editor"><div className="panel-label"><span>CSV or TSV input</span><small>01</small></div><textarea aria-label="Jira import" value={importText} onChange={(event) => setImportText(event.target.value)} /><label className="duplicate-choice">Existing Jira keys<select value={duplicateBehavior} onChange={(event) => setDuplicateBehavior(event.target.value)}><option value="error">Ask me to decide</option><option value="skip">Skip existing</option><option value="replace">Replace existing</option></select></label><div className="editor-actions"><label className="secondary file-picker">Choose file<input type="file" accept=".csv,.tsv,.txt" onChange={(event) => loadImportFile(event.target.files?.[0])} /></label><span>Maximum 1 MB · 500 tickets</span></div></div>
           <div className="panel preview"><div className="panel-label"><span>Validated preview</span><small>{String(importPreview?.source_count || 0).padStart(2, '0')}</small></div>{previewing && <p className="preview-message">Checking rows…</p>}{importPreview?.errors.map((error) => <div className="import-error" key={`${error.row_number}-${error.field}`}><strong>Row {error.row_number || '—'} · {error.field}</strong><span>{error.message}</span><small>{error.fix}</small></div>)}{!previewing && importPreview?.rows.map((item) => <div className="preview-row" key={`${item.row_number}-${item.issue_key || item.summary}`}><span>{item.issue_key || 'Manual'}</span><p>{item.summary}</p><small>{item.action}</small></div>)}<div className="preview-counts"><span>{importPreview?.saved_count || 0} to save</span><span>{importPreview?.skipped_count || 0} skipped</span></div><button className="primary wide" disabled={previewing || importing || !importPreview?.saved_count || importPreview.errors.length > 0} onClick={saveImport}>{importing ? 'Saving tickets…' : `Save ${importPreview?.saved_count || 0} to backlog`} <span>→</span></button></div>
         </section>}
-        {importMode === 'jira' && !jiraConnection && <JiraConnectForm draft={jiraDraft} setDraft={setJiraDraft} connecting={jiraConnecting} onConnect={connectJira} />}
+        {importMode === 'jira' && !jiraConnection && <JiraConnectForm draft={jiraDraft} setDraft={setJiraDraft} connecting={jiraConnecting} onOAuthConnect={connectJiraOAuth} onApiTokenConnect={connectJira} />}
         {importMode === 'jira' && jiraConnection && <JiraImportPanel connection={jiraConnection} issueKey={jiraIssueKey} setIssueKey={setJiraIssueKey} addingIssue={jiraAddingIssue} jql={jql} setJql={setJql} duplicateBehavior={duplicateBehavior} setDuplicateBehavior={setDuplicateBehavior} preview={jiraPreview} searching={jiraSearching} importing={importing} onSelectField={selectJiraField} onDisconnect={disconnectJira} onAddIssue={addJiraIssue} onSearch={searchJira} onImport={saveJiraImport} />}
         <div className="manual-entry"><span>Not in Jira?</span><button className="secondary" onClick={openNewTicket}>Add a ticket manually</button></div>
       </main>

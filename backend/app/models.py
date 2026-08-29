@@ -279,6 +279,26 @@ class TicketImportResult(BaseModel):
     skipped_count: int = 0
 
 
+def _jira_site_url(value: str) -> str:
+    from urllib.parse import urlparse
+
+    normalized = value.strip().rstrip("/")
+    parsed = urlparse(normalized)
+    hostname = (parsed.hostname or "").casefold()
+    if (
+        parsed.scheme != "https"
+        or not hostname.endswith(".atlassian.net")
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+        or parsed.port
+    ):
+        raise ValueError("Use the HTTPS URL of a Jira Cloud site ending in .atlassian.net")
+    return normalized
+
+
 class JiraConnectionCreate(BaseModel):
     site_url: str = Field(min_length=1, max_length=500)
     email: str = Field(min_length=3, max_length=320)
@@ -288,23 +308,7 @@ class JiraConnectionCreate(BaseModel):
     @field_validator("site_url")
     @classmethod
     def validate_site_url(cls, value: str) -> str:
-        from urllib.parse import urlparse
-
-        normalized = value.strip().rstrip("/")
-        parsed = urlparse(normalized)
-        hostname = (parsed.hostname or "").casefold()
-        if (
-            parsed.scheme != "https"
-            or not hostname.endswith(".atlassian.net")
-            or parsed.path not in {"", "/"}
-            or parsed.query
-            or parsed.fragment
-            or parsed.username
-            or parsed.password
-            or parsed.port
-        ):
-            raise ValueError("Use the HTTPS URL of a Jira Cloud site ending in .atlassian.net")
-        return normalized
+        return _jira_site_url(value)
 
     @field_validator("email")
     @classmethod
@@ -324,7 +328,8 @@ class JiraConnection(BaseModel):
     room_id: UUID
     owner_id: UUID
     site_url: str
-    email: str
+    oauth: bool = False
+    email: str | None = None
     jira_account_id: str
     jira_display_name: str
     story_points_field_id: str | None = None
@@ -334,7 +339,35 @@ class JiraConnection(BaseModel):
 
 
 class JiraConnectionSecret(JiraConnection):
-    encrypted_api_token: str
+    auth_method: Literal["oauth", "api_token"] = "api_token"
+    cloud_id: str | None = None
+    encrypted_api_token: str | None = None
+    encrypted_access_token: str | None = None
+    encrypted_refresh_token: str | None = None
+    token_expires_at: datetime | None = None
+
+
+class JiraOAuthAuthorizeRequest(BaseModel):
+    site_url: str = Field(min_length=1, max_length=500)
+
+    @field_validator("site_url")
+    @classmethod
+    def validate_site_url(cls, value: str) -> str:
+        return _jira_site_url(value)
+
+
+class JiraOAuthAuthorizeResponse(BaseModel):
+    authorization_url: str
+
+
+class JiraOAuthCallbackRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=4000)
+    state: str = Field(min_length=1, max_length=4000)
+
+
+class JiraOAuthCallbackResult(BaseModel):
+    room_id: UUID
+    connection: JiraConnection
 
 
 class JiraSearchRequest(BaseModel):

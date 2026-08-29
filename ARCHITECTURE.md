@@ -174,8 +174,12 @@ erDiagram
         uuid room_id PK,FK
         uuid owner_id FK
         text site_url
-        text email
+        text auth_method
+        text cloud_id
+        text encrypted_access_token
+        text encrypted_refresh_token
         text encrypted_api_token
+        timestamptz token_expires_at
         text jira_account_id
         text story_points_field_id
     }
@@ -267,7 +271,7 @@ Import persistence currently performs row operations sequentially rather than in
 
 ### Jira JQL import and write-back
 
-Jira access is optional and scoped to one room. Only the facilitator can submit or use a credential. FastAPI validates the supplied Jira Cloud URL, authenticates with the email and API token, discovers candidate Story Points fields, encrypts the token with `JIRA_ENCRYPTION_KEY`, and stores only ciphertext in `jira_room_connections`. The table grants no access to `anon` or `authenticated`; only the API service role can read it after checking room ownership.
+Jira access is optional and scoped to one room. OAuth 2.0 authorization-code (Atlassian 3LO) is the primary path; the email/API-token path is an explicitly advanced fallback. Only the facilitator can initiate, complete, or use a connection. FastAPI binds encrypted OAuth `state` to the room, facilitator identity, and requested Jira site for ten minutes. After callback it exchanges the one-time code, matches the requested site to an Atlassian accessible resource, discovers Story Points fields, encrypts access and rotating refresh tokens with `JIRA_ENCRYPTION_KEY`, and stores only ciphertext in `jira_room_connections`. Expired access tokens are refreshed server-side and both rotated credentials are replaced atomically at the repository boundary. The table grants no access to `anon` or `authenticated`; only the API service role can read it after checking room ownership.
 
 ```mermaid
 sequenceDiagram
@@ -276,11 +280,21 @@ sequenceDiagram
     participant DB as Postgres
     participant J as Jira Cloud
 
-    F->>API: Connect(site URL, email, API token)
-    API->>J: GET myself + fields
+    F->>API: Start OAuth(site URL)
+    API-->>F: Atlassian authorize URL + encrypted state
+    F->>J: Consent with own Atlassian account
+    J-->>F: Redirect callback(code, state)
+    F->>API: Complete callback(code, state)
+    API->>J: Exchange code + list accessible resources
+    API->>J: GET myself + fields via cloudId gateway
     J-->>API: Jira identity + Story Points fields
-    API->>DB: encrypt and upsert room credential
+    API->>DB: encrypt and upsert OAuth tokens
     API-->>F: connection metadata only
+
+    opt Access token expired
+        API->>J: Rotate refresh token
+        API->>DB: replace encrypted access + refresh tokens
+    end
 
     F->>API: Add one issue key
     API->>J: exact-key JQL preview + confirmed import
@@ -410,6 +424,9 @@ Production configuration is split by trust level:
 | `SUPABASE_URL` | API runtime | Configuration |
 | `SUPABASE_SERVICE_ROLE_KEY` | API runtime only | Secret |
 | `JIRA_ENCRYPTION_KEY` | API runtime only | Secret; encrypts room Jira tokens |
+| `JIRA_OAUTH_CLIENT_ID` | API runtime | Atlassian app identifier |
+| `JIRA_OAUTH_CLIENT_SECRET` | API runtime only | Secret; OAuth code and refresh exchange |
+| `JIRA_OAUTH_REDIRECT_URI` | API runtime | Exact registered frontend callback URL |
 | `RATE_LIMIT_*_PER_MINUTE` | API runtime | Configuration |
 
 `/health` proves the API process is alive. `/health/ready` also checks the repository/Supabase dependency. Nginx exposes `/healthz` for the web container.
@@ -469,7 +486,7 @@ Database schema changes must be additive migrations in `supabase/migrations`. Do
 - Completion/closure is derived rather than modeled as an explicit room state.
 - Import persistence is not atomic across the entire batch.
 - Jira JQL import and write-back run synchronously and sequentially. Large rooms may need durable background jobs in a later release.
-- Jira credentials are room-scoped but bound to the facilitator's browser identity. Losing that anonymous identity removes access to manage or disconnect the connection.
+- Jira credentials are room-scoped but bound to the facilitator's browser identity. Losing that anonymous identity removes access to manage or disconnect the connection. A facilitator must authorize each room separately.
 - Rotating `JIRA_ENCRYPTION_KEY` without a dual-key migration requires reconnecting every Jira-enabled room.
 - Presence and automatic-reveal eligibility use a fixed 45-second activity window.
 - In-memory rate limits do not coordinate across horizontally scaled API replicas.

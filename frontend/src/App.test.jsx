@@ -23,6 +23,8 @@ const apiMock = vi.hoisted(() => ({
   importTickets: vi.fn(),
   jiraConnection: vi.fn(),
   connectJira: vi.fn(),
+  authorizeJiraOAuth: vi.fn(),
+  completeJiraOAuth: vi.fn(),
   selectJiraStoryPointsField: vi.fn(),
   disconnectJira: vi.fn(),
   searchJira: vi.fn(),
@@ -337,6 +339,32 @@ describe('ticket backlog', () => {
     total_points: 0,
   }
 
+  it('completes the Jira OAuth callback and returns to the protected room', async () => {
+    window.history.replaceState({}, '', '/jira/oauth/callback?code=auth-code&state=encrypted-state')
+    apiMock.completeJiraOAuth.mockResolvedValue({ room_id: roomId })
+    apiMock.room.mockResolvedValue(backlogRoom)
+    apiMock.tickets.mockResolvedValue([])
+
+    render(<App />)
+
+    expect(screen.getByRole('heading', { name: 'Finishing the Atlassian connection…' })).toBeVisible()
+    await waitFor(() => expect(apiMock.completeJiraOAuth).toHaveBeenCalledWith(
+      'auth-code', 'encrypted-state',
+    ))
+    await waitFor(() => expect(window.location.pathname).toBe(`/rooms/${roomId}`))
+    expect(await screen.findByRole('heading', { name: 'Bring in the tickets.' })).toBeVisible()
+  })
+
+  it('shows a safe error when Atlassian consent is rejected', () => {
+    window.history.replaceState({}, '', '/jira/oauth/callback?error=access_denied&error_description=Consent+was+cancelled')
+
+    render(<App />)
+
+    expect(screen.getByRole('heading', { name: 'Jira was not connected.' })).toBeVisible()
+    expect(screen.getByText('Consent was cancelled')).toBeVisible()
+    expect(apiMock.completeJiraOAuth).not.toHaveBeenCalled()
+  })
+
   it('previews validated Jira rows before saving them', async () => {
     window.history.replaceState({}, '', `/rooms/${roomId}`)
     apiMock.room.mockResolvedValue(backlogRoom)
@@ -411,7 +439,7 @@ describe('ticket backlog', () => {
     fireEvent.change(screen.getByLabelText('Jira site URL'), { target: { value: 'https://example.atlassian.net' } })
     fireEvent.change(screen.getByLabelText('Jira email'), { target: { value: 'maya@example.com' } })
     fireEvent.change(screen.getByLabelText('Jira API token'), { target: { value: 'secret' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect Jira' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect with API token' }))
 
     expect(await screen.findByText(/Connected to/)).toBeVisible()
     fireEvent.change(screen.getByLabelText('Jira estimate field'), {
@@ -429,6 +457,25 @@ describe('ticket backlog', () => {
       roomId, 'project = PAY', 'error',
     ))
     expect(await screen.findByRole('heading', { name: 'Backlog' })).toBeVisible()
+  })
+
+  it('starts OAuth as the primary Jira connection and surfaces setup errors', async () => {
+    window.history.replaceState({}, '', `/rooms/${roomId}`)
+    apiMock.room.mockResolvedValue(backlogRoom)
+    apiMock.tickets.mockResolvedValue([])
+    apiMock.authorizeJiraOAuth.mockRejectedValue(new Error('Jira OAuth is not configured'))
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Jira + JQL' }))
+    fireEvent.change(screen.getByLabelText('Jira site URL'), {
+      target: { value: 'https://example.atlassian.net' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Continue with Atlassian/ }))
+
+    await waitFor(() => expect(apiMock.authorizeJiraOAuth).toHaveBeenCalledWith(
+      roomId, 'https://example.atlassian.net',
+    ))
+    expect(await screen.findByText('Jira OAuth is not configured')).toBeVisible()
   })
 
   it('adds one Jira ticket by issue key without writing JQL', async () => {
@@ -456,7 +503,7 @@ describe('ticket backlog', () => {
     fireEvent.change(screen.getByLabelText('Jira site URL'), { target: { value: 'https://example.atlassian.net' } })
     fireEvent.change(screen.getByLabelText('Jira email'), { target: { value: 'maya@example.com' } })
     fireEvent.change(screen.getByLabelText('Jira API token'), { target: { value: 'secret' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect Jira' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect with API token' }))
 
     expect(await screen.findByText(/Connected to/)).toBeVisible()
     fireEvent.change(screen.getByLabelText('Jira issue key'), {
@@ -490,7 +537,7 @@ describe('ticket backlog', () => {
     fireEvent.change(screen.getByLabelText('Jira site URL'), { target: { value: 'https://example.atlassian.net' } })
     fireEvent.change(screen.getByLabelText('Jira email'), { target: { value: 'maya@example.com' } })
     fireEvent.change(screen.getByLabelText('Jira API token'), { target: { value: 'secret' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect Jira' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect with API token' }))
 
     expect(await screen.findByText(/Connected to/)).toBeVisible()
     fireEvent.change(screen.getByLabelText('Jira issue key'), { target: { value: '201' } })

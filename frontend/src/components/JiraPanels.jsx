@@ -1,13 +1,28 @@
-export function JiraConnectForm({ draft, setDraft, connecting, onConnect }) {
+export function JiraConnectForm({
+  draft,
+  setDraft,
+  connecting,
+  onOAuthConnect,
+  onApiTokenConnect,
+}) {
   return (
-    <form className="panel jira-connect" onSubmit={onConnect}>
+    <section className="panel jira-connect">
       <div className="panel-label"><span>Room-scoped Jira connection</span><small>Private</small></div>
-      <p className="settings-note">Use an API token from your Jira account. It is encrypted by the API and never sent to other room members.</p>
-      <label>Jira site URL<input aria-label="Jira site URL" required placeholder="https://company.atlassian.net" value={draft.site_url} onChange={(event) => setDraft({ ...draft, site_url: event.target.value })} /></label>
-      <label>Jira email<input aria-label="Jira email" type="email" required value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /></label>
-      <label>API token<input aria-label="Jira API token" type="password" required autoComplete="off" value={draft.api_token} onChange={(event) => setDraft({ ...draft, api_token: event.target.value })} /></label>
-      <button className="primary" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect Jira'}</button>
-    </form>
+      <p className="settings-note">Connect through Atlassian so every facilitator uses their own Jira account and permissions. The connection belongs only to this room.</p>
+      <form className="jira-oauth-form" onSubmit={onOAuthConnect}>
+        <label>Jira site URL<input aria-label="Jira site URL" required placeholder="https://company.atlassian.net" value={draft.site_url} onChange={(event) => setDraft({ ...draft, site_url: event.target.value })} /></label>
+        <button className="primary" disabled={connecting}>{connecting ? 'Opening Atlassian…' : 'Continue with Atlassian'} <span>→</span></button>
+      </form>
+      <details className="jira-api-token-fallback">
+        <summary>Advanced: connect with an API token</summary>
+        <p className="settings-note">Fallback for administrators and private testing. Tickettalk encrypts the token and never sends it to other room members.</p>
+        <form onSubmit={onApiTokenConnect}>
+          <label>Jira email<input aria-label="Jira email" type="email" required value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /></label>
+          <label>API token<input aria-label="Jira API token" type="password" required autoComplete="off" value={draft.api_token} onChange={(event) => setDraft({ ...draft, api_token: event.target.value })} /></label>
+          <button className="secondary" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect with API token'}</button>
+        </form>
+      </details>
+    </section>
   )
 }
 
@@ -32,7 +47,7 @@ export function JiraImportPanel({
   return (
     <>
       <div className="jira-connected">
-        <span><i /> Connected to <strong>{connection.site_url}</strong> as {connection.jira_display_name}</span>
+        <span><i /> Connected to <strong>{connection.site_url}</strong> as {connection.jira_display_name} <small className="jira-auth-badge">{connection.oauth ? 'OAuth' : 'API token'}</small></span>
         {connection.story_points_fields?.length > 0 && (
           <label>Estimate field<select aria-label="Jira estimate field" value={connection.story_points_field_id || ''} onChange={(event) => onSelectField(event.target.value)}>{connection.story_points_fields.map((field) => <option value={field.id} key={field.id}>{field.name}</option>)}</select></label>
         )}

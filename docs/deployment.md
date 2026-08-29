@@ -38,6 +38,9 @@ FRONTEND_ORIGIN=https://tickettalk.io
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 JIRA_ENCRYPTION_KEY=YOUR_FERNET_KEY
+JIRA_OAUTH_CLIENT_ID=YOUR_ATLASSIAN_CLIENT_ID
+JIRA_OAUTH_CLIENT_SECRET=YOUR_ATLASSIAN_CLIENT_SECRET
+JIRA_OAUTH_REDIRECT_URI=https://tickettalk.io/jira/oauth/callback
 RATE_LIMIT_JOIN_PER_MINUTE=20
 RATE_LIMIT_IMPORT_PER_MINUTE=12
 RATE_LIMIT_VOTE_PER_MINUTE=120
@@ -45,15 +48,25 @@ RATE_LIMIT_VOTE_PER_MINUTE=120
 
 Compose uses required-variable expressions, so a build with an incomplete environment stops before deployment. In Supabase Auth, enable anonymous sign-ins; email providers and redirect allow-list entries are not required. Apply all migrations in `supabase/migrations` before inviting users.
 
-Generate `JIRA_ENCRYPTION_KEY` once with the command documented in the root README. It encrypts the per-room Jira API tokens and must exist only in the API runtime. Keep it stable across deploys and backups. Rotating it requires every active Jira room connection to be recreated unless a key-rotation migration is implemented first.
+Generate `JIRA_ENCRYPTION_KEY` once with the command documented in the root README. It encrypts per-room OAuth access/refresh tokens and fallback API tokens and must exist only in the API runtime. Keep it stable across deploys and backups. Rotating it requires every active Jira room connection to be recreated unless a key-rotation migration is implemented first.
+
+## Configure Atlassian OAuth 2.0 (3LO)
+
+1. In the Atlassian developer console, create one OAuth 2.0 (3LO) integration for tickettalk. Configure it for sharing/distribution; otherwise only the app owner can authorize it.
+2. Add the Jira API classic scopes `read:jira-work`, `read:jira-user`, and `write:jira-work`. Tickettalk requests `offline_access` during consent so it can rotate refresh tokens.
+3. Add the callback URL `https://tickettalk.io/jira/oauth/callback`. Atlassian requires an exact match, including scheme, host, path, and trailing slash behavior.
+4. Copy the client ID and secret into the API-only Coolify variables above. Never add the client secret to the frontend build variables.
+5. Redeploy the API and web services. In a disposable room, enter the intended `*.atlassian.net` site, choose **Continue with Atlassian**, approve that site, and verify import plus write-back.
+
+For local development, register `http://localhost:5173/jira/oauth/callback` as an additional callback and set that exact value in `JIRA_OAUTH_REDIRECT_URI`. Tickettalk matches the site typed before consent against Atlassian's accessible resources, which prevents silently connecting a different Jira tenant when an account can access several sites.
 
 ## First deployment checks
 
 1. Deploy and wait for both Coolify health checks to become green.
 2. Confirm `https://tickettalk.io/healthz` returns `200`, `https://api.tickettalk.io/health` returns `{"status":"ok"}`, and `https://api.tickettalk.io/health/ready` returns `{"status":"ready"}`.
 3. Without registering, create a room, copy its UUID URL, open that exact URL in a private browser, join, vote, reveal, and export. Confirm that a different UUID returns an unavailable-room response.
-4. In a test room, connect a limited Jira API token, preview a narrow JQL query, import one issue, and write its final result back. Disconnect the room afterward.
-5. Inspect the built web assets and browser network log: `SUPABASE_SERVICE_ROLE_KEY`, `JIRA_ENCRYPTION_KEY`, and Jira API tokens must not appear anywhere.
+4. In a test room, connect with Atlassian OAuth, preview a narrow JQL query, import one issue, refresh the page, and write its final result back. Also verify the advanced API-token fallback once, then disconnect the room.
+5. Inspect the built web assets and browser network log: `SUPABASE_SERVICE_ROLE_KEY`, `JIRA_ENCRYPTION_KEY`, `JIRA_OAUTH_CLIENT_SECRET`, OAuth tokens, and Jira API tokens must not appear anywhere.
 6. Confirm cross-origin API calls originate only from `https://tickettalk.io` and produce no mixed-content errors.
 
 ## Deploy and rollback

@@ -627,7 +627,17 @@ class InMemoryRepository:
         self._require_owner(connection.room_id, actor)
         self.jira_connections[connection.room_id] = deepcopy(connection)
         return JiraConnection.model_validate(
-            connection.model_dump(exclude={"encrypted_api_token"})
+            connection.model_dump(
+                exclude={
+                    "auth_method",
+                    "cloud_id",
+                    "encrypted_api_token",
+                    "encrypted_access_token",
+                    "encrypted_refresh_token",
+                    "token_expires_at",
+                }
+            )
+            | {"oauth": connection.auth_method == "oauth"}
         )
 
     def delete_jira_connection(self, room_id: UUID, actor: Principal) -> None:
@@ -1260,7 +1270,7 @@ class SupabaseRepository:
     ) -> JiraConnection:
         self._require_owner_room(connection.room_id, actor)
         values = connection.model_dump(
-            mode="json", exclude={"created_at", "updated_at"}
+            mode="json", exclude={"created_at", "updated_at", "oauth"}
         )
         result = self.client.table("jira_room_connections").upsert(
             values, on_conflict="room_id"
@@ -1269,7 +1279,11 @@ class SupabaseRepository:
         if not row:
             raise RepositoryError("Jira connection returned no data")
         return JiraConnection.model_validate(
-            {**row, "story_points_fields": connection.story_points_fields}
+            {
+                **row,
+                "oauth": connection.auth_method == "oauth",
+                "story_points_fields": connection.story_points_fields,
+            }
         )
 
     def delete_jira_connection(self, room_id: UUID, actor: Principal) -> None:

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 from app.auth import DEVELOPMENT_USER_ID, Principal
-from app.models import JiraImportRow, RevealedVote, Room, Ticket
+from app.models import JiraConnectionSecret, JiraImportRow, RevealedVote, Room, Ticket
 from app.repositories import InMemoryRepository, SupabaseRepository, summarize_votes
 
 ROOM_ID = UUID("10000000-0000-4000-8000-000000000071")
@@ -117,3 +117,53 @@ def test_supabase_jira_import_serializes_timestamps_as_json() -> None:
 
     assert imported.imported_count == 1
     assert inserted[0]["jira_updated_at"] == "2026-08-29T10:00:00Z"
+
+
+def test_supabase_jira_connection_persists_secrets_without_public_helper_fields() -> None:
+    actor = Principal(id=DEVELOPMENT_USER_ID, display_name="Facilitator")
+    saved: list[dict[str, object]] = []
+
+    class UpsertQuery:
+        def upsert(
+            self, values: dict[str, object], *, on_conflict: str
+        ) -> "UpsertQuery":
+            assert on_conflict == "room_id"
+            saved.append(values)
+            return self
+
+        def execute(self) -> SimpleNamespace:
+            return SimpleNamespace(data=[saved[-1]])
+
+    class Client:
+        @staticmethod
+        def table(name: str) -> UpsertQuery:
+            assert name == "jira_room_connections"
+            return UpsertQuery()
+
+    class Repository(SupabaseRepository):
+        def __init__(self) -> None:
+            self.client = Client()
+
+        @staticmethod
+        def _require_owner_room(_room_id: UUID, _actor: Principal) -> None:
+            return None
+
+    connection = JiraConnectionSecret(
+        room_id=ROOM_ID,
+        owner_id=actor.id,
+        site_url="https://example.atlassian.net",
+        auth_method="oauth",
+        cloud_id="cloud-123",
+        encrypted_access_token="encrypted-access",
+        encrypted_refresh_token="encrypted-refresh",
+        token_expires_at=datetime(2026, 8, 29, 11, tzinfo=UTC),
+        jira_account_id="jira-owner",
+        jira_display_name="Maya Jira",
+    )
+
+    public = Repository().save_jira_connection(connection, actor)
+
+    assert "oauth" not in saved[0]
+    assert saved[0]["auth_method"] == "oauth"
+    assert saved[0]["encrypted_refresh_token"] == "encrypted-refresh"
+    assert public.oauth is True
