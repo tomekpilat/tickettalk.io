@@ -435,10 +435,14 @@ Database schema changes must be additive migrations in `supabase/migrations`. Do
 | Concern | Primary source |
 | --- | --- |
 | Frontend application and session state | `frontend/src/App.jsx` |
+| Jira connection/import/write-back UI | `frontend/src/components/JiraPanels.jsx` |
+| Derived room navigation and completion state | `frontend/src/lib/workspace.js` |
 | Browser authentication | `frontend/src/lib/auth.js` |
 | API client | `frontend/src/lib/api.js` |
 | Realtime subscriptions | `frontend/src/lib/supabase.js` |
-| FastAPI routes and CSV export | `backend/app/main.py` |
+| FastAPI app factory, core routes, and CSV export | `backend/app/main.py` |
+| Shared FastAPI dependencies | `backend/app/dependencies.py` |
+| Jira API routes and orchestration | `backend/app/jira_routes.py` |
 | JWT validation and principals | `backend/app/auth.py` |
 | Product models and validation | `backend/app/models.py` |
 | Production and in-memory repositories | `backend/app/repositories.py` |
