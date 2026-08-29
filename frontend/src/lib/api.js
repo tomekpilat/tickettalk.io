@@ -82,6 +82,27 @@ export const api = {
   importTickets: (roomId, content, duplicateBehavior) => request(`/api/rooms/${roomId}/tickets/import`, {
     method: 'POST', body: JSON.stringify({ content, duplicate_behavior: duplicateBehavior }),
   }),
+  jiraConnection: (roomId) => request(`/api/rooms/${roomId}/jira/connection`),
+  connectJira: (roomId, connection) => request(`/api/rooms/${roomId}/jira/connection`, {
+    method: 'POST', body: JSON.stringify(connection),
+  }),
+  selectJiraStoryPointsField: (roomId, fieldId) => request(`/api/rooms/${roomId}/jira/connection/story-points-field`, {
+    method: 'PUT', body: JSON.stringify({ field_id: fieldId }),
+  }),
+  disconnectJira: (roomId) => request(`/api/rooms/${roomId}/jira/connection`, {
+    method: 'DELETE',
+  }),
+  searchJira: (roomId, jql, duplicateBehavior) => request(`/api/rooms/${roomId}/jira/search`, {
+    method: 'POST', body: JSON.stringify({ jql, duplicate_behavior: duplicateBehavior }),
+  }),
+  importJira: (roomId, jql, duplicateBehavior) => request(`/api/rooms/${roomId}/jira/import`, {
+    method: 'POST', body: JSON.stringify({ jql, duplicate_behavior: duplicateBehavior }),
+  }),
+  jiraAssignees: (roomId, ticketId, query = '') => request(`/api/rooms/${roomId}/tickets/${ticketId}/jira-assignees?q=${encodeURIComponent(query)}`),
+  setJiraAssignee: (roomId, ticketId, accountId, displayName) => request(`/api/rooms/${roomId}/tickets/${ticketId}/jira-assignee`, {
+    method: 'PUT', body: JSON.stringify({ account_id: accountId, display_name: displayName }),
+  }),
+  writebackJira: (roomId) => request(`/api/rooms/${roomId}/jira/writeback`, { method: 'POST' }),
   createTicket: (roomId, ticket) => request(`/api/rooms/${roomId}/tickets`, {
     method: 'POST', body: JSON.stringify(ticket),
   }),

@@ -188,3 +188,40 @@ def parse_jira_import(
             _error(0, "file", f"The file could not be parsed: {error}", "Check its CSV quoting.")
         )
     return preview
+
+
+def preview_jira_rows(
+    rows: list[JiraImportRow],
+    duplicate_behavior: DuplicateBehavior,
+    existing_tickets: list[Ticket],
+) -> JiraImportPreview:
+    preview = JiraImportPreview(source_count=len(rows))
+    existing_by_key = {
+        ticket.issue_key.casefold(): ticket
+        for ticket in existing_tickets
+        if ticket.issue_key
+    }
+    for row in rows:
+        existing = existing_by_key.get(row.issue_key.casefold()) if row.issue_key else None
+        if existing and duplicate_behavior == "error":
+            preview.errors.append(
+                _error(
+                    row.row_number,
+                    "Issue key",
+                    f"{row.issue_key} already exists in this room.",
+                    "Choose Skip existing or Replace existing before importing.",
+                )
+            )
+            continue
+        if existing and duplicate_behavior == "skip":
+            row.action = "skip"
+            row.existing_ticket_id = existing.id
+            preview.skipped_count += 1
+        elif existing:
+            row.action = "replace"
+            row.existing_ticket_id = existing.id
+            preview.saved_count += 1
+        else:
+            preview.saved_count += 1
+        preview.rows.append(row)
+    return preview

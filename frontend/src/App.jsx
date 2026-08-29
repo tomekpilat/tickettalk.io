@@ -64,8 +64,15 @@ function Workspace({ user }) {
   const [roomScale, setRoomScale] = useState('fibonacci')
   const [revealMode, setRevealMode] = useState('manual')
   const [importText, setImportText] = useState(sampleImport)
+  const [importMode, setImportMode] = useState('csv')
   const [duplicateBehavior, setDuplicateBehavior] = useState('error')
   const [importPreview, setImportPreview] = useState(null)
+  const [jiraConnection, setJiraConnection] = useState(null)
+  const [jiraDraft, setJiraDraft] = useState({ site_url: '', email: '', api_token: '' })
+  const [jql, setJql] = useState('project = PAY AND resolution = Unresolved ORDER BY Rank ASC')
+  const [jiraPreview, setJiraPreview] = useState(null)
+  const [jiraConnecting, setJiraConnecting] = useState(false)
+  const [jiraSearching, setJiraSearching] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [importing, setImporting] = useState(false)
   const [ticketDraft, setTicketDraft] = useState(null)
@@ -78,6 +85,8 @@ function Workspace({ user }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState(null)
   const [toast, setToast] = useState('')
+  const [writingJira, setWritingJira] = useState(false)
+  const [jiraWriteback, setJiraWriteback] = useState(null)
 
   const refreshRooms = useCallback(async () => {
     try {
@@ -110,6 +119,16 @@ function Workspace({ user }) {
       setRoom(nextRoom)
       setTickets(nextTickets)
       setMembers(nextMembers)
+      if (nextRoom.owner_id === user.id) {
+        try {
+          setJiraConnection(await api.jiraConnection(roomId))
+        } catch (error) {
+          if (error.status !== 404) setToast(error.message)
+          setJiraConnection(null)
+        }
+      } else {
+        setJiraConnection(null)
+      }
       setVoteSubmitted(nextMembers.some((member) => member.user_id === user.id && member.has_voted))
       setChoosingVote(false)
       const activeIndex = Math.max(0, nextTickets.findIndex((ticket) => ticket.id === nextRoom.active_ticket_id))
@@ -147,6 +166,9 @@ function Workspace({ user }) {
     setMembers([])
     setRouteError(null)
     setSettingsOpen(false)
+    setJiraConnection(null)
+    setJiraPreview(null)
+    setJiraWriteback(null)
     refreshRooms()
   }, [refreshRooms])
 
@@ -246,7 +268,7 @@ function Workspace({ user }) {
   const isFacilitator = Boolean(room && room.owner_id === user.id)
 
   useEffect(() => {
-    if (!room?.id || view !== 'import' || !isFacilitator || !importText.trim()) {
+    if (!room?.id || view !== 'import' || importMode !== 'csv' || !isFacilitator || !importText.trim()) {
       setImportPreview(null)
       return undefined
     }
@@ -269,7 +291,7 @@ function Workspace({ user }) {
       cancelled = true
       window.clearTimeout(timeout)
     }
-  }, [duplicateBehavior, importText, isFacilitator, room?.id, view])
+  }, [duplicateBehavior, importMode, importText, isFacilitator, room?.id, view])
 
   const createRoom = async () => {
     setFormError('')
@@ -318,6 +340,74 @@ function Workspace({ user }) {
       setTickets(result.tickets)
       setRoom((currentRoom) => ({ ...currentRoom, ticket_count: result.tickets.length }))
       setToast(`${result.imported_count + result.replaced_count} tickets saved`)
+      setView('backlog')
+    } catch (error) {
+      setFormError(error.message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const connectJira = async (event) => {
+    event.preventDefault()
+    setFormError('')
+    setJiraConnecting(true)
+    try {
+      const connected = await api.connectJira(room.id, jiraDraft)
+      setJiraConnection(connected)
+      setJiraDraft((draft) => ({ ...draft, api_token: '' }))
+      setToast(`Connected as ${connected.jira_display_name}`)
+    } catch (error) {
+      setFormError(error.message)
+    } finally {
+      setJiraConnecting(false)
+    }
+  }
+
+  const searchJira = async () => {
+    if (!jql.trim()) return
+    setFormError('')
+    setJiraSearching(true)
+    try {
+      setJiraPreview(await api.searchJira(room.id, jql, duplicateBehavior))
+    } catch (error) {
+      setJiraPreview(null)
+      setFormError(error.message)
+    } finally {
+      setJiraSearching(false)
+    }
+  }
+
+  const selectJiraField = async (fieldId) => {
+    try {
+      setJiraConnection(await api.selectJiraStoryPointsField(room.id, fieldId))
+      setToast('Jira estimate field updated')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const disconnectJira = async () => {
+    if (!window.confirm('Disconnect Jira and remove this room’s stored credential?')) return
+    try {
+      await api.disconnectJira(room.id)
+      setJiraConnection(null)
+      setJiraPreview(null)
+      setToast('Jira disconnected')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const saveJiraImport = async () => {
+    if (!jiraPreview?.saved_count || jiraPreview.errors.length) return
+    setImporting(true)
+    setFormError('')
+    try {
+      const result = await api.importJira(room.id, jql, duplicateBehavior)
+      setTickets(result.tickets)
+      setRoom((currentRoom) => ({ ...currentRoom, ticket_count: result.tickets.length }))
+      setToast(`${result.imported_count + result.replaced_count} Jira tickets saved`)
       setView('backlog')
     } catch (error) {
       setFormError(error.message)
@@ -527,6 +617,34 @@ function Workspace({ user }) {
     }).catch((error) => setToast(error.message))
   }
 
+  const saveJiraAssignee = async (ticket, userOption) => {
+    try {
+      const updated = await api.setJiraAssignee(
+        room.id, ticket.id, userOption?.account_id || null, userOption?.display_name || null,
+      )
+      setTickets((items) => items.map((item) => item.id === updated.id ? updated : item))
+      setToast('Final Jira assignee saved')
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  const writeResultsToJira = async () => {
+    if (!window.confirm('Write final estimates and assignees to Jira?')) return
+    setWritingJira(true)
+    setJiraWriteback(null)
+    try {
+      const result = await api.writebackJira(room.id)
+      setJiraWriteback(result)
+      setTickets(await api.tickets(room.id))
+      setToast(result.failed_count ? `${result.failed_count} Jira updates failed` : 'Jira updated')
+    } catch (error) {
+      setToast(error.message)
+    } finally {
+      setWritingJira(false)
+    }
+  }
+
   const deleteRoom = async () => {
     const confirmation = window.prompt(`Type the room name to delete it permanently:\n\n${room.name}`)
     if (confirmation !== room.name) {
@@ -686,13 +804,16 @@ function Workspace({ user }) {
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
       <main className="page import-page">
         <div className="page-toolbar"><Back onClick={goToRooms}>Rooms</Back>{roomActions}</div>
-        <div className="split-heading"><div><p className="eyebrow">{room.name} / import</p><h1>Bring in the tickets.</h1></div><p>Paste a Jira export. We’ll keep the key, type and story context attached to every estimate.</p></div>
+        <div className="split-heading"><div><p className="eyebrow">{room.name} / import</p><h1>Bring in the tickets.</h1></div><p>Pull directly from Jira with JQL, or paste a CSV export. The source context stays attached to every estimate.</p></div>
         <ParticipantRoster members={members} currentUserId={user.id} compact />
+        <div className="import-tabs segmented" aria-label="Import source"><button className={importMode === 'jira' ? 'active' : ''} onClick={() => setImportMode('jira')}>Jira + JQL</button><button className={importMode === 'csv' ? 'active' : ''} onClick={() => setImportMode('csv')}>CSV / TSV</button></div>
         {formError && <p className="form-error inline-error">{formError}</p>}
-        <section className="import-grid">
+        {importMode === 'csv' && <section className="import-grid">
           <div className="panel import-editor"><div className="panel-label"><span>CSV or TSV input</span><small>01</small></div><textarea aria-label="Jira import" value={importText} onChange={(event) => setImportText(event.target.value)} /><label className="duplicate-choice">Existing Jira keys<select value={duplicateBehavior} onChange={(event) => setDuplicateBehavior(event.target.value)}><option value="error">Ask me to decide</option><option value="skip">Skip existing</option><option value="replace">Replace existing</option></select></label><div className="editor-actions"><label className="secondary file-picker">Choose file<input type="file" accept=".csv,.tsv,.txt" onChange={(event) => loadImportFile(event.target.files?.[0])} /></label><span>Maximum 1 MB · 500 tickets</span></div></div>
           <div className="panel preview"><div className="panel-label"><span>Validated preview</span><small>{String(importPreview?.source_count || 0).padStart(2, '0')}</small></div>{previewing && <p className="preview-message">Checking rows…</p>}{importPreview?.errors.map((error) => <div className="import-error" key={`${error.row_number}-${error.field}`}><strong>Row {error.row_number || '—'} · {error.field}</strong><span>{error.message}</span><small>{error.fix}</small></div>)}{!previewing && importPreview?.rows.map((item) => <div className="preview-row" key={`${item.row_number}-${item.issue_key || item.summary}`}><span>{item.issue_key || 'Manual'}</span><p>{item.summary}</p><small>{item.action}</small></div>)}<div className="preview-counts"><span>{importPreview?.saved_count || 0} to save</span><span>{importPreview?.skipped_count || 0} skipped</span></div><button className="primary wide" disabled={previewing || importing || !importPreview?.saved_count || importPreview.errors.length > 0} onClick={saveImport}>{importing ? 'Saving tickets…' : `Save ${importPreview?.saved_count || 0} to backlog`} <span>→</span></button></div>
-        </section>
+        </section>}
+        {importMode === 'jira' && !jiraConnection && <form className="panel jira-connect" onSubmit={connectJira}><div className="panel-label"><span>Room-scoped Jira connection</span><small>Private</small></div><p className="settings-note">Use an API token from your Jira account. It is encrypted by the API and never sent to other room members.</p><label>Jira site URL<input aria-label="Jira site URL" required placeholder="https://company.atlassian.net" value={jiraDraft.site_url} onChange={(event) => setJiraDraft({ ...jiraDraft, site_url: event.target.value })} /></label><label>Jira email<input aria-label="Jira email" type="email" required value={jiraDraft.email} onChange={(event) => setJiraDraft({ ...jiraDraft, email: event.target.value })} /></label><label>API token<input aria-label="Jira API token" type="password" required autoComplete="off" value={jiraDraft.api_token} onChange={(event) => setJiraDraft({ ...jiraDraft, api_token: event.target.value })} /></label><button className="primary" disabled={jiraConnecting}>{jiraConnecting ? 'Connecting…' : 'Connect Jira'}</button></form>}
+        {importMode === 'jira' && jiraConnection && <><div className="jira-connected"><span><i /> Connected to <strong>{jiraConnection.site_url}</strong> as {jiraConnection.jira_display_name}</span>{jiraConnection.story_points_fields?.length > 0 && <label>Estimate field<select aria-label="Jira estimate field" value={jiraConnection.story_points_field_id || ''} onChange={(event) => selectJiraField(event.target.value)}>{jiraConnection.story_points_fields.map((field) => <option value={field.id} key={field.id}>{field.name}</option>)}</select></label>}<button className="secondary" onClick={disconnectJira}>Disconnect</button></div><section className="import-grid"><div className="panel import-editor"><div className="panel-label"><span>JQL query</span><small>01</small></div><textarea aria-label="JQL query" value={jql} onChange={(event) => setJql(event.target.value)} /><label className="duplicate-choice">Existing Jira keys<select value={duplicateBehavior} onChange={(event) => setDuplicateBehavior(event.target.value)}><option value="error">Ask me to decide</option><option value="skip">Skip existing</option><option value="replace">Refresh existing</option></select></label><div className="editor-actions"><button className="primary" disabled={jiraSearching || !jql.trim()} onClick={searchJira}>{jiraSearching ? 'Running JQL…' : 'Preview tickets'}</button><span>Maximum 500 tickets</span></div></div><div className="panel preview"><div className="panel-label"><span>Jira preview</span><small>{String(jiraPreview?.source_count || 0).padStart(2, '0')}</small></div>{jiraSearching && <p className="preview-message">Querying Jira…</p>}{jiraPreview?.errors.map((error) => <div className="import-error" key={`${error.row_number}-${error.field}`}><strong>{error.field}</strong><span>{error.message}</span><small>{error.fix}</small></div>)}{!jiraSearching && jiraPreview?.rows.map((item) => <div className="preview-row" key={item.jira_issue_id}><span>{item.issue_key}</span><p>{item.summary}</p><small>{item.action}</small></div>)}{!jiraPreview && !jiraSearching && <p className="preview-message">Run the query to review exactly what will be imported.</p>}<div className="preview-counts"><span>{jiraPreview?.saved_count || 0} to save</span><span>{jiraPreview?.skipped_count || 0} skipped</span></div><button className="primary wide" disabled={jiraSearching || importing || !jiraPreview?.saved_count || jiraPreview.errors.length > 0} onClick={saveJiraImport}>{importing ? 'Importing from Jira…' : `Import ${jiraPreview?.saved_count || 0} tickets`} <span>→</span></button></div></section></>}
         <div className="manual-entry"><span>Not in Jira?</span><button className="secondary" onClick={openNewTicket}>Add a ticket manually</button></div>
       </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
@@ -717,7 +838,14 @@ function Workspace({ user }) {
 
   if (view === 'summary') return (
     <Shell status={apiOnline} user={user} onRooms={goToRooms}>
-      <main className="page summary-page"><div className="page-toolbar"><Back onClick={() => setView(room.active_ticket_id ? 'session' : 'backlog')}>{room.active_ticket_id ? 'Session' : 'Backlog'}</Back>{roomActions}</div><section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section><ParticipantRoster members={members} currentUserId={user.id} compact /><div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div><div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.final_estimate == null ? 'empty-points' : ''}>{item.final_estimate ?? '—'}</b></button>)}</div></main>
+      <main className="page summary-page">
+        <div className="page-toolbar"><Back onClick={() => setView(room.active_ticket_id ? 'session' : 'backlog')}>{room.active_ticket_id ? 'Session' : 'Backlog'}</Back>{roomActions}</div>
+        <section className="page-heading"><div><p className="eyebrow">{room.name}</p><h1>Pricing summary</h1></div>{isFacilitator && <button className="secondary" onClick={exportCsv}>Export CSV ↓</button>}</section>
+        <ParticipantRoster members={members} currentUserId={user.id} compact />
+        <div className="summary-stats"><div><strong>{tickets.reduce((sum, item) => sum + (Number(item.final_estimate) || 0), 0)}</strong><span>Total points</span></div><div><strong>{tickets.filter((item) => item.final_estimate != null).length}</strong><span>Tickets sized</span></div><div><strong>{completion}%</strong><span>Complete</span></div></div>
+        <div className="ticket-table panel">{tickets.map((item, index) => <button className="ticket-row" key={item.id} disabled={!isFacilitator} onClick={() => openTicket(index)}><span>{item.issue_key}</span><strong>{item.summary}</strong><small>{item.issue_type}</small><b className={item.final_estimate == null ? 'empty-points' : ''}>{item.final_estimate ?? '—'}</b></button>)}</div>
+        {isFacilitator && tickets.some((ticket) => ticket.jira_issue_id) && <section className="panel jira-writeback"><div className="panel-label"><span>Jira write-back</span><small>{jiraConnection?.jira_display_name || 'Connected account'}</small></div><p>Review the final owner for each Jira ticket. One confirmation writes both the final estimate and assignee.</p><div className="jira-writeback-list">{tickets.filter((ticket) => ticket.jira_issue_id).map((ticket) => <div className="jira-writeback-row" key={ticket.id}><span>{ticket.issue_key}</span><strong>{ticket.final_estimate ?? '—'} pts</strong><AssigneePicker ticket={ticket} loadUsers={(query) => api.jiraAssignees(room.id, ticket.id, query)} onSelect={(option) => saveJiraAssignee(ticket, option)} /><small className={ticket.jira_writeback_error ? 'write-failed' : ticket.jira_writeback_at ? 'write-done' : ''}>{ticket.jira_writeback_error || (ticket.jira_writeback_at ? 'Written' : 'Pending')}</small></div>)}</div>{jiraWriteback && <div className={jiraWriteback.failed_count ? 'writeback-result failed' : 'writeback-result'}>{jiraWriteback.succeeded_count} updated · {jiraWriteback.failed_count} failed</div>}<button className="primary" disabled={writingJira || room.scale === 'tshirt' || tickets.some((ticket) => ticket.jira_issue_id && ticket.final_estimate == null)} onClick={writeResultsToJira}>{writingJira ? 'Writing to Jira…' : 'Write final results to Jira'} <span>→</span></button>{room.scale === 'tshirt' && <p className="form-error">T-shirt estimates cannot be written to Jira’s numeric Story Points field.</p>}</section>}
+      </main>
       {settingsOpen && <RoomSettings room={room} draft={settingsDraft} setDraft={setSettingsDraft} ticketCount={tickets.length} error={formError} onClose={() => setSettingsOpen(false)} onSave={saveSettings} onDelete={deleteRoom} />}
       {toast && <Toast>{toast}</Toast>}
     </Shell>
@@ -735,6 +863,27 @@ function Workspace({ user }) {
       {toast && <Toast>{toast}</Toast>}
     </div>
   )
+}
+
+function AssigneePicker({ ticket, loadUsers, onSelect }) {
+  const [options, setOptions] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const open = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      setOptions(await loadUsers(''))
+    } catch (nextError) {
+      setError(nextError.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (!options) return <div className="assignee-picker"><span>{ticket.final_assignee_display_name || 'Unassigned'}</span><button className="secondary" disabled={loading} onClick={open}>{loading ? 'Loading…' : 'Change'}</button>{error && <small>{error}</small>}</div>
+  return <div className="assignee-picker"><select aria-label={`Final assignee for ${ticket.issue_key}`} value={ticket.final_assignee_account_id || ''} onChange={(event) => { const option = options.find((item) => item.account_id === event.target.value); onSelect(option || null) }}><option value="">Unassigned</option>{options.map((option) => <option value={option.account_id} key={option.account_id}>{option.display_name}</option>)}</select><button className="secondary" onClick={() => setOptions(null)}>Done</button></div>
 }
 
 function JoinRoom({ roomId, defaultName = '', onJoining, onJoined }) {

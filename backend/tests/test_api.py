@@ -2,13 +2,22 @@ import csv
 import io
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Self
 from uuid import UUID
 
 from fastapi.testclient import TestClient
 
 from app.auth import Principal, get_current_principal
 from app.config import Settings
-from app.main import app, create_app, get_repository
+from app.jira_client import TokenCipher, generate_encryption_key
+from app.main import (
+    app,
+    create_app,
+    get_jira_client_factory,
+    get_repository,
+    get_token_cipher,
+)
+from app.models import JiraField, JiraImportRow, JiraUser
 from app.repositories import InMemoryRepository
 
 OWNER = Principal(
@@ -41,6 +50,58 @@ def client_with(repository: InMemoryRepository, actor: Principal = OWNER) -> Tes
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+class FakeJiraClient:
+    def __init__(self) -> None:
+        self.writes: list[tuple[str, str, float, str | None]] = []
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def myself(self) -> dict[str, str]:
+        return {"account_id": "jira-owner", "display_name": "Maya Jira"}
+
+    def story_points_fields(self) -> list[JiraField]:
+        return [JiraField(id="customfield_10016", name="Story Points")]
+
+    def search(self, jql: str, story_points_field_id: str | None) -> list[JiraImportRow]:
+        assert jql == "project = PAY ORDER BY Rank ASC"
+        assert story_points_field_id == "customfield_10016"
+        return [
+            JiraImportRow(
+                row_number=1,
+                issue_key="PAY-201",
+                summary="Wallet alert",
+                issue_type="Story",
+                description="Notify customers.",
+                story_points=3,
+                jira_issue_id="10101",
+                jira_assignee_account_id="account-current",
+                jira_assignee_display_name="Current Owner",
+                final_assignee_account_id="account-current",
+                final_assignee_display_name="Current Owner",
+            )
+        ]
+
+    def assignable_users(self, issue_key: str, query: str = "") -> list[JiraUser]:
+        assert issue_key == "PAY-201"
+        assert query == "Maya"
+        return [JiraUser(account_id="account-maya", display_name="Maya Chen")]
+
+    def write_issue(
+        self,
+        issue_key: str,
+        story_points_field_id: str,
+        final_estimate: float,
+        assignee_account_id: str | None,
+    ) -> None:
+        self.writes.append(
+            (issue_key, story_points_field_id, final_estimate, assignee_account_id)
+        )
 
 
 def test_health_readiness_and_request_ids(caplog) -> None:
@@ -385,6 +446,86 @@ def test_jira_preview_save_and_manual_backlog_persist_in_order() -> None:
             reverse_order[0],
             reverse_order[2],
         ]
+    finally:
+        clear_overrides()
+
+
+def test_room_scoped_jira_jql_import_assignee_and_writeback() -> None:
+    repository = InMemoryRepository(seed=False)
+    client = client_with(repository)
+    jira = FakeJiraClient()
+    cipher = TokenCipher(generate_encryption_key())
+    app.dependency_overrides[get_token_cipher] = lambda: cipher
+    app.dependency_overrides[get_jira_client_factory] = lambda: (
+        lambda _site, _email, _token: jira
+    )
+    room_id = client.post("/api/rooms", json={"name": "Jira planning"}).json()["id"]
+    jql = "project = PAY ORDER BY Rank ASC"
+    try:
+        connected = client.post(
+            f"/api/rooms/{room_id}/jira/connection",
+            json={
+                "site_url": "https://example.atlassian.net",
+                "email": "maya@example.com",
+                "api_token": "never-return-this-token",
+            },
+        )
+        assert connected.status_code == 200
+        assert connected.json()["jira_display_name"] == "Maya Jira"
+        assert connected.json()["story_points_field_id"] == "customfield_10016"
+        assert connected.json()["story_points_fields"][0]["name"] == "Story Points"
+        assert "token" not in connected.text.casefold()
+        stored = repository.jira_connections[UUID(room_id)]
+        assert stored.encrypted_api_token != "never-return-this-token"
+        assert cipher.decrypt(stored.encrypted_api_token) == "never-return-this-token"
+        selected_field = client.put(
+            f"/api/rooms/{room_id}/jira/connection/story-points-field",
+            json={"field_id": "customfield_10016"},
+        )
+        assert selected_field.status_code == 200
+
+        preview = client.post(
+            f"/api/rooms/{room_id}/jira/search",
+            json={"jql": jql, "duplicate_behavior": "error"},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["saved_count"] == 1
+        assert preview.json()["rows"][0]["jira_issue_id"] == "10101"
+
+        imported = client.post(
+            f"/api/rooms/{room_id}/jira/import",
+            json={"jql": jql, "duplicate_behavior": "error"},
+        )
+        assert imported.status_code == 200
+        ticket = imported.json()["tickets"][0]
+        assert ticket["issue_key"] == "PAY-201"
+        assert ticket["final_assignee_display_name"] == "Current Owner"
+
+        assignees = client.get(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/jira-assignees?q=Maya"
+        )
+        assert assignees.status_code == 200
+        assert assignees.json()[0]["account_id"] == "account-maya"
+        selected = client.put(
+            f"/api/rooms/{room_id}/tickets/{ticket['id']}/jira-assignee",
+            json={"account_id": "account-maya", "display_name": "Maya Chen"},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["final_assignee_display_name"] == "Maya Chen"
+
+        repository.tickets[UUID(ticket["id"])].final_estimate = "8"
+        written = client.post(f"/api/rooms/{room_id}/jira/writeback")
+        assert written.status_code == 200
+        assert written.json()["succeeded_count"] == 1
+        assert written.json()["failed_count"] == 0
+        assert jira.writes == [
+            ("PAY-201", "customfield_10016", 8.0, "account-maya")
+        ]
+        assert repository.tickets[UUID(ticket["id"])].jira_writeback_at is not None
+
+        app.dependency_overrides[get_current_principal] = lambda: OUTSIDER
+        assert client.get(f"/api/rooms/{room_id}/jira/connection").status_code == 403
+        assert client.post(f"/api/rooms/{room_id}/jira/writeback").status_code == 403
     finally:
         clear_overrides()
 

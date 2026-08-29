@@ -38,6 +38,15 @@ class Ticket(TicketCreate):
     vote_state: Literal["voting", "revealed"] = "voting"
     vote_round: int = 1
     revealed_at: datetime | None = None
+    jira_site_url: str | None = None
+    jira_issue_id: str | None = None
+    jira_updated_at: datetime | None = None
+    jira_assignee_account_id: str | None = None
+    jira_assignee_display_name: str | None = None
+    final_assignee_account_id: str | None = None
+    final_assignee_display_name: str | None = None
+    jira_writeback_at: datetime | None = None
+    jira_writeback_error: str | None = None
 
 
 class TicketUpdate(BaseModel):
@@ -239,6 +248,13 @@ class JiraImportRow(TicketCreate):
     row_number: int
     action: ImportAction = "import"
     existing_ticket_id: UUID | None = None
+    jira_site_url: str | None = Field(default=None, max_length=500)
+    jira_issue_id: str | None = Field(default=None, max_length=80)
+    jira_updated_at: datetime | None = None
+    jira_assignee_account_id: str | None = Field(default=None, max_length=160)
+    jira_assignee_display_name: str | None = Field(default=None, max_length=160)
+    final_assignee_account_id: str | None = Field(default=None, max_length=160)
+    final_assignee_display_name: str | None = Field(default=None, max_length=160)
 
 
 class JiraImportError(BaseModel):
@@ -261,3 +277,108 @@ class TicketImportResult(BaseModel):
     imported_count: int = 0
     replaced_count: int = 0
     skipped_count: int = 0
+
+
+class JiraConnectionCreate(BaseModel):
+    site_url: str = Field(min_length=1, max_length=500)
+    email: str = Field(min_length=3, max_length=320)
+    api_token: str = Field(min_length=1, max_length=2000)
+    story_points_field_id: str | None = Field(default=None, max_length=80)
+
+    @field_validator("site_url")
+    @classmethod
+    def validate_site_url(cls, value: str) -> str:
+        from urllib.parse import urlparse
+
+        normalized = value.strip().rstrip("/")
+        parsed = urlparse(normalized)
+        hostname = (parsed.hostname or "").casefold()
+        if (
+            parsed.scheme != "https"
+            or not hostname.endswith(".atlassian.net")
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+            or parsed.port
+        ):
+            raise ValueError("Use the HTTPS URL of a Jira Cloud site ending in .atlassian.net")
+        return normalized
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if "@" not in normalized:
+            raise ValueError("Enter the email address used by the Jira account")
+        return normalized
+
+
+class JiraField(BaseModel):
+    id: str
+    name: str
+
+
+class JiraConnection(BaseModel):
+    room_id: UUID
+    owner_id: UUID
+    site_url: str
+    email: str
+    jira_account_id: str
+    jira_display_name: str
+    story_points_field_id: str | None = None
+    story_points_fields: list[JiraField] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class JiraConnectionSecret(JiraConnection):
+    encrypted_api_token: str
+
+
+class JiraSearchRequest(BaseModel):
+    jql: str = Field(min_length=1, max_length=10_000)
+    duplicate_behavior: DuplicateBehavior = "error"
+
+    @field_validator("jql")
+    @classmethod
+    def normalize_jql(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Enter a JQL query")
+        return normalized
+
+
+class JiraFieldSelection(BaseModel):
+    field_id: str = Field(min_length=1, max_length=80)
+
+
+class JiraUser(BaseModel):
+    account_id: str
+    display_name: str
+    avatar_url: str | None = None
+
+
+class FinalAssigneeUpdate(BaseModel):
+    account_id: str | None = Field(default=None, max_length=160)
+    display_name: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def require_display_name_for_user(self) -> "FinalAssigneeUpdate":
+        if self.account_id and not self.display_name:
+            raise ValueError("Provide the Jira assignee display name")
+        return self
+
+
+class JiraWritebackItem(BaseModel):
+    ticket_id: UUID
+    issue_key: str
+    success: bool
+    error: str | None = None
+
+
+class JiraWritebackResult(BaseModel):
+    items: list[JiraWritebackItem]
+    succeeded_count: int
+    failed_count: int
