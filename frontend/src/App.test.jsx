@@ -125,10 +125,25 @@ describe('room creation', () => {
     })
   })
 
+  const openRoomCreation = async () => {
+    expect(await screen.findByRole('heading', { name: /Talk through the work/ })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /Start a room/ }))
+    expect(await screen.findByRole('heading', { name: 'Create a pricing room' })).toBeVisible()
+  }
+
+  it('opens on the tickettalk home screen instead of the creation form', async () => {
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: /Talk through the work/ })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'tickettalk' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Recent rooms' })).toBeVisible()
+    expect(screen.queryByLabelText('Room name')).not.toBeInTheDocument()
+  })
+
   it('creates a configured room and moves to its canonical URL', async () => {
     render(<App />)
 
-    expect(await screen.findByRole('heading', { name: 'Pricing rooms' })).toBeVisible()
+    await openRoomCreation()
     fireEvent.change(screen.getByLabelText('Your name'), {
       target: { value: '  Maya   Chen  ' },
     })
@@ -151,7 +166,7 @@ describe('room creation', () => {
 
   it('shows local validation before calling the API', async () => {
     render(<App />)
-    await screen.findByRole('heading', { name: 'Pricing rooms' })
+    await openRoomCreation()
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Maya' } })
     fireEvent.change(screen.getByLabelText('Room name'), { target: { value: 'x' } })
     fireEvent.click(screen.getByRole('button', { name: /Create pricing room/ }))
@@ -162,7 +177,7 @@ describe('room creation', () => {
 
   it('requires only a display name before creating a protected room', async () => {
     render(<App />)
-    await screen.findByRole('heading', { name: 'Pricing rooms' })
+    await openRoomCreation()
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '   ' } })
     fireEvent.click(screen.getByRole('button', { name: /Create pricing room/ }))
 

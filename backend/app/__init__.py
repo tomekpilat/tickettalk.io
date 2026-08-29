@@ -1,2 +1,1 @@
-"""Tickettalks API package."""
-
+"""tickettalk API package."""
